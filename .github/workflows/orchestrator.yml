@@ -1,0 +1,224 @@
+name: AI PR Orchestrator
+
+# Reusable workflow: consumers call this from a thin caller (templates/consumer-workflow.yml).
+# All logic lives in this repo and runs via the actions/orchestrate composite action —
+# resolved by GitHub itself (this repo is public), with no checkout of this repo and no
+# extra token. NOTE: the internal `uses: …/actions/orchestrate@live` refs are literals
+# (`uses:` cannot take expressions); `live` moves automatically to every green `main`
+# (scripts/retag-live.sh, run by ci.yml's retag job) and carries the workflow and its
+# action refs together — see docs/rollout.md, "Why `live`".
+# This guarantee is TAG-PIN ONLY: a caller pinned to an exact commit SHA of this file
+# still resolves `actions/orchestrate@live` from the moving tag, not from that SHA (no
+# expression can fix that), so an old SHA-pinned caller can pick up a newer action the
+# next time `live` moves. Pin `live`, not a SHA, if you need workflow and action
+# versions to move together.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        type: string
+        default: ubuntu-latest
+        description: >-
+          Runner for the orchestrate job, and the claude-fix job too unless
+          fix-runs-on overrides it below. Defaults to GH-hosted so every existing
+          caller is unaffected by this input's mere existence. Pass your own
+          self-hosted runner's label to route there instead — gate it behind a
+          repository variable (the CI_RUNNER_MODE pattern in
+          templates/consumer-workflow.yml), since a self-hosted label has no
+          automatic fallback if that runner is offline.
+      fix-runs-on:
+        type: string
+        default: ""
+        description: >-
+          Runner for the claude-fix job only, overriding runs-on for that job when
+          set. Empty (the default) falls back to runs-on, so every existing caller
+          is unaffected. Exists because claude-fix runs a repo's real test suite —
+          slower and heavier than the orchestrate job — and self-hosted setups that
+          split runners by instance must route it to a DIFFERENT runner/label than
+          runs-on: sharing one lets GitHub schedule a 30-minute fix round onto the
+          fast runner and starve it.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+        description: Anthropic subscription OAuth token for the Claude fix job
+      AI_ORCH_TELEGRAM_BOT_TOKEN:
+        required: false
+      AI_ORCH_TELEGRAM_CHAT_ID:
+        required: false
+
+jobs:
+  orchestrate:
+    name: AI Orchestrator
+    runs-on: ${{ inputs['runs-on'] }}
+    timeout-minutes: 10
+    concurrency:
+      # Serialize per PR; check_suite events key by head SHA (mapped to the PR inside).
+      group: ai-orch-${{ github.event.pull_request.number || github.event.issue.number || github.event.check_suite.head_sha || github.event.workflow_run.head_sha || github.run_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+      actions: read
+    outputs:
+      should_fix: ${{ steps.orchestrate.outputs.should_fix }}
+      pr_number: ${{ steps.orchestrate.outputs.pr_number }}
+      round: ${{ steps.orchestrate.outputs.round }}
+      head_ref: ${{ steps.orchestrate.outputs.head_ref }}
+      head_sha: ${{ steps.orchestrate.outputs.head_sha }}
+      fix_instruction: ${{ steps.orchestrate.outputs.fix_instruction }}
+      thread_resolution_rule: ${{ steps.orchestrate.outputs.thread_resolution_rule }}
+    steps:
+      - name: Orchestrate
+        id: orchestrate
+        uses: noneedinmagic/awe/actions/orchestrate@live
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AI_ORCH_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_ORCH_TELEGRAM_BOT_TOKEN }}
+          AI_ORCH_TELEGRAM_CHAT_ID: ${{ secrets.AI_ORCH_TELEGRAM_CHAT_ID }}
+          # Repository Variable (not a secret — plain, UI-editable, no PR needed),
+          # automatically resolved against the CALLING repo even inside this reusable
+          # workflow (GitHub Actions vars context, unlike secrets, needs no explicit
+          # forwarding). Optional override for policy.yml's max_rounds; see
+          # scripts/lib/policy.js#applyMaxRoundsOverride and docs/policy-reference.md.
+          AI_ORCH_MAX_ROUNDS: ${{ vars.AI_ORCH_MAX_ROUNDS }}
+
+  claude-fix:
+    name: AI Claude Fix
+    needs: orchestrate
+    if: needs.orchestrate.outputs.should_fix == 'true'
+    runs-on: ${{ inputs['fix-runs-on'] || inputs['runs-on'] }}
+    timeout-minutes: 30
+    concurrency:
+      group: ai-fix-${{ needs.orchestrate.outputs.pr_number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.orchestrate.outputs.head_ref }}
+          fetch-depth: 0
+          # By default checkout writes GITHUB_TOKEN into .git/config as a push credential,
+          # which `git push` picks up regardless of which identity claude-code-action itself
+          # authenticates as — so every fix commit's PUSHER (not its author, which correctly
+          # reads claude[bot]) was actually github-actions[bot]. GitHub's anti-recursion rule
+          # then gates the resulting synchronize/CI runs behind manual approval, since
+          # GITHUB_TOKEN-authored pushes must not silently trigger further workflow runs (see
+          # CONTEXT.md's pusher/author distinction) — this PR's #94 fix. claude-code-action
+          # already exposes its own Claude App token (`steps.run.outputs.github_token`,
+          # "the Claude App token if available"), and claude[bot] is already observed
+          # triggering workflows in this repo ungated — persist-credentials: false stops
+          # checkout from shadowing it, letting the push use that App credential instead.
+          persist-credentials: false
+
+      - name: Verify head has not moved since dispatch
+        env:
+          EXPECTED_SHA: ${{ needs.orchestrate.outputs.head_sha }}
+          HEAD_REF: ${{ needs.orchestrate.outputs.head_ref }}
+        run: |
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::${HEAD_REF} moved from ${EXPECTED_SHA} to ${ACTUAL_SHA} after the fix round was dispatched; aborting to avoid applying stale Codex findings to unreviewed code."
+            exit 1
+          fi
+
+      - name: Render fix prompt
+        id: prompt
+        uses: noneedinmagic/awe/actions/orchestrate@live
+        with:
+          mode: render-prompt
+        env:
+          PR_NUMBER: ${{ needs.orchestrate.outputs.pr_number }}
+          ROUND: ${{ needs.orchestrate.outputs.round }}
+          HEAD_SHA: ${{ needs.orchestrate.outputs.head_sha }}
+          HUMAN_INSTRUCTION: ${{ needs.orchestrate.outputs.fix_instruction }}
+          THREAD_RESOLUTION_RULE: ${{ needs.orchestrate.outputs.thread_resolution_rule }}
+
+      - name: Run Claude review response
+        id: claude
+        continue-on-error: true
+        # Below the job's own timeout-minutes: 30 on purpose. A JOB timeout cancels every
+        # step unconditionally (report-fix-result would never run, leaving state stuck at
+        # ai:fixing forever); a STEP timeout respects continue-on-error above and still
+        # lets "Report fix result" run and post the fixer-failed handoff.
+        timeout-minutes: 20
+        uses: anthropics/claude-code-action@e5ad3c7725bc2459721893f88879fef9dbcf97b0 # v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # In this loop the triggering actor is always a bot: the local-agent
+          # reviewers (whose review events dispatch fix rounds) or github-actions
+          # (re-evaluation events). Actor-gating is done by our policy layer
+          # (should_fix), so enumerate the known bots rather than '*'.
+          allowed_bots: "normandy-garrus,normandy-tali,github-actions"
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          # `fixer-failed` handoffs have been the dominant "stuck" cause (is_error:true,
+          # ~2s, zero turns, $0 cost — the SDK errors before any real work), and the
+          # action redacts the underlying error by default. Full output stays inside this
+          # consumer repo's own Actions logs (same audience already able to read the PR diff), so
+          # the tradeoff is log noise, not new exposure.
+          show_full_output: true
+          claude_args: |
+            --allowedTools "Bash(git:*),Bash(gh api:*),Bash(gh pr:*),Read,Write,Edit,Glob,Grep"
+
+      - name: Determine fix outcome
+        id: outcome
+        env:
+          HEAD_REF: ${{ needs.orchestrate.outputs.head_ref }}
+          PRE_RUN_SHA: ${{ needs.orchestrate.outputs.head_sha }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          # Empty iff claude-code-action never executed Claude at all — its
+          # workflow-validation skip path (a PR editing the workflow file the run itself
+          # came from, e.g. this repo's own .github/workflows/*.yml — GitHub refuses to
+          # run an untrusted copy of a workflow) exits 0 *before* setting this output.
+          # Without this, that skip is indistinguishable from "ran and pushed nothing" —
+          # a fixer that never even attempted a fix was reported as a dispute (#133).
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          # `persist-credentials: false` on "Check out PR head" above (deliberate, #94 —
+          # keeps GITHUB_TOKEN from shadowing claude-code-action's own push credential)
+          # leaves `origin` with no stored credential, so `git ls-remote` can no longer
+          # read the repo — `gh api`, authenticated via GH_TOKEN, can.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REMOTE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${HEAD_REF}" --jq .object.sha) || REMOTE_SHA=""
+          if [ "$CLAUDE_OUTCOME" != "success" ]; then
+            FIX_OUTCOME=failed
+          elif [ -z "$EXECUTION_FILE" ]; then
+            FIX_OUTCOME=skipped
+          elif [ -z "$REMOTE_SHA" ]; then
+            # Never silently degrade to `disputed`: an unreadable ref means we genuinely
+            # cannot tell whether the fixer pushed. Fail loud instead of guessing.
+            echo "::error::could not read refs/heads/${HEAD_REF}; cannot classify this round"
+            FIX_OUTCOME=failed
+          elif [ "$REMOTE_SHA" != "$PRE_RUN_SHA" ]; then
+            FIX_OUTCOME=pushed
+          else
+            FIX_OUTCOME=disputed
+          fi
+          echo "Claude outcome=$CLAUDE_OUTCOME execution_file=${EXECUTION_FILE:+set} remote=$REMOTE_SHA pre=$PRE_RUN_SHA → $FIX_OUTCOME"
+          echo "fix_outcome=$FIX_OUTCOME" >> "$GITHUB_OUTPUT"
+
+      - name: Report fix result
+        uses: noneedinmagic/awe/actions/orchestrate@live
+        with:
+          mode: fix-result
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.orchestrate.outputs.pr_number }}
+          FIX_OUTCOME: ${{ steps.outcome.outputs.fix_outcome }}
+          # This step's own reduce() call is the one that emits the `notify` effect for
+          # `fixer-failed` handoffs (fixResult is only ever processed here) — without these,
+          # every fixer-failed ping silently no-ops even with valid secrets and enabled: true,
+          # since orchestrate.js's notify guard requires both env vars to be present.
+          AI_ORCH_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_ORCH_TELEGRAM_BOT_TOKEN }}
+          AI_ORCH_TELEGRAM_CHAT_ID: ${{ secrets.AI_ORCH_TELEGRAM_CHAT_ID }}

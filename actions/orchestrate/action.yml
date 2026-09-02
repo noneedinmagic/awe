@@ -1,0 +1,98 @@
+name: AI Orchestrator logic
+description: >-
+  Runs this repo's orchestrator scripts without any checkout. Cross-repo `uses:`
+  references to this public repo's actions are resolved by GitHub itself — unlike
+  an explicit actions/checkout, which would need a token (the consumer's
+  GITHUB_TOKEN is scoped to the consumer repo only).
+
+inputs:
+  mode:
+    description: "'event' (default), 'fix-result', or 'render-prompt'"
+    default: event
+
+outputs:
+  should_fix:
+    value: ${{ steps.run.outputs.should_fix }}
+  pr_number:
+    value: ${{ steps.run.outputs.pr_number }}
+  round:
+    value: ${{ steps.run.outputs.round }}
+  head_ref:
+    value: ${{ steps.run.outputs.head_ref }}
+  head_sha:
+    value: ${{ steps.run.outputs.head_sha }}
+  fix_instruction:
+    value: ${{ steps.run.outputs.fix_instruction }}
+  thread_resolution_rule:
+    description: >-
+      Tier-aware step-1b instruction for claude-fix-prompt.md's
+      {{THREAD_RESOLUTION_RULE}} placeholder — see
+      docs/adr/0005-reviewer-owns-thread-lifecycle.md.
+    value: ${{ steps.run.outputs.thread_resolution_rule }}
+  prompt:
+    description: rendered Claude fix prompt (render-prompt mode only)
+    value: ${{ steps.run.outputs.prompt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24
+
+    - id: run
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      # Env vars the scripts need (GITHUB_TOKEN, PR_NUMBER, FIX_OUTCOME, ROUND,
+      # HEAD_SHA, TELEGRAM_*) are set on the calling step and inherited here.
+      run: |
+        ROOT="$GITHUB_ACTION_PATH/../.."
+        case "$MODE" in
+          event)
+            node "$ROOT/scripts/orchestrate.js" ;;
+          fix-result)
+            node "$ROOT/scripts/orchestrate.js" fix-result ;;
+          render-prompt)
+            # Randomized per run, like setOutput() in orchestrate.js: a fixed delimiter
+            # would let a listed human's appended /ai fix text (or review body) close the
+            # heredoc early with a line that happens to match it, corrupting $GITHUB_OUTPUT.
+            DELIM="AI_ORCH_${RANDOM}${RANDOM}${RANDOM}"
+            # A caller pinned to an exact SHA of orchestrator.yml — against ADR-0004's own
+            # advice to pin `live` — can run this (new) action ahead of that (old) workflow
+            # ever setting THREAD_RESOLUTION_RULE at all. `s/{{X}}/${VAR}/g` with an unset
+            # var deletes the placeholder outright, silently blanking step 1b's whole
+            # resolve instruction at EVERY tier, not just falling back to it. Mirror
+            # orchestrate.js's THREAD_RESOLUTION_RULES.default verbatim here (single-quoted,
+            # `'"'"'` escapes each embedded apostrophe — a heredoc reads better but a YAML
+            # block scalar requires every content line indented at least as far as the
+            # block's own indentation, which a column-0 heredoc body violates) so an
+            # unset/empty env value degrades to the exact same text a normal run would have
+            # rendered, not an empty one. Keep these two copies in sync if either edits.
+            if [ -z "${THREAD_RESOLUTION_RULE:-}" ]; then
+              THREAD_RESOLUTION_RULE='When you have addressed such a thread (fixed, or answered with a reply the participants'"'"' comments already support), resolve it: `gh api graphql -f query='"'"'mutation{resolveReviewThread(input:{threadId:"THREAD_ID"}){thread{id}}}'"'"'`. Never resolve a thread you pushed back on or left with an open question — leave those for the human.'
+            fi
+            {
+              echo "prompt<<${DELIM}"
+              # THREAD_RESOLUTION_RULE is a fixed, code-authored string (see
+              # orchestrate.js's THREAD_RESOLUTION_RULES) — never PR- or human-controlled
+              # text, so plain sed substitution is safe the same way ROUND/HEAD_SHA are;
+              # unlike HUMAN_INSTRUCTION below, it never needs the printf-append escape.
+              sed -e "s/{{PR_NUMBER}}/${PR_NUMBER}/g" \
+                  -e "s#{{REPO}}#${GITHUB_REPOSITORY}#g" \
+                  -e "s/{{ROUND}}/${ROUND}/g" \
+                  -e "s/{{HEAD_SHA}}/${HEAD_SHA}/g" \
+                  -e "s/{{THREAD_RESOLUTION_RULE}}/${THREAD_RESOLUTION_RULE}/g" \
+                  "$ROOT/scripts/claude-fix-prompt.md"
+              # Appended verbatim (never via sed — arbitrary human text would break
+              # sed escaping): the /ai fix instruction (or the review body it falls back
+              # to when a human requested changes with no inline comments), when given.
+              if [ -n "${HUMAN_INSTRUCTION:-}" ]; then
+                printf '\n## Direct instruction from a listed human\n\n%s\n' "$HUMAN_INSTRUCTION"
+              fi
+              echo "${DELIM}"
+            } >> "$GITHUB_OUTPUT" ;;
+          *)
+            echo "::error::unknown mode '$MODE'"; exit 1 ;;
+        esac

@@ -1,0 +1,49 @@
+# Thin caller — this repo orchestrating its own PRs.
+#
+# Deliberately uses the full owner/repo/path@live EXTERNAL reference form, never the
+# local ./path form: a local reference resolves against the SAME ref this workflow
+# file is running from — i.e. the PR's own branch — which would let a PR that
+# modifies scripts/orchestrate.js evaluate itself with its own proposed logic. The
+# external @live form always resolves against the last commit on main that passed
+# CI (see docs/rollout.md, "Why `live`"), regardless of what this PR changes. Same
+# safety property every other consumer repo already gets; see docs/architecture.md.
+#
+# GitHub-hosted runners only: this repo is public, and a self-hosted runner must never
+# be registered on a public repository (docs/security.md).
+name: AI PR Orchestration
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, edited]
+  pull_request_review:
+    types: [submitted, dismissed]
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows: [CI] # matches this repo's own .github/workflows/ci.yml `name: CI`
+    types: [completed]
+
+jobs:
+  orchestrate:
+    # See templates/consumer-workflow.yml for the full rationale on this guard —
+    # kept in sync with it by hand, since this repo's caller predates the template split.
+    if: >-
+      (github.event_name != 'issue_comment' ||
+        (contains(github.event.comment.body, '/ai') &&
+         !endsWith(github.event.comment.user.login, '[bot]'))) &&
+      (github.event_name != 'pull_request' || github.actor != 'dependabot[bot]') &&
+      (github.event_name != 'pull_request' || github.event.action != 'edited' ||
+        github.event.changes.base)
+    # Pin `live` — the only supported ref; see docs/rollout.md.
+    uses: noneedinmagic/awe/.github/workflows/orchestrator.yml@live
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: write
+      actions: read
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AI_ORCH_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_ORCH_TELEGRAM_BOT_TOKEN }}
+      AI_ORCH_TELEGRAM_CHAT_ID: ${{ secrets.AI_ORCH_TELEGRAM_CHAT_ID }}
