@@ -44,7 +44,7 @@ const DEFAULTS = {
     // The local sweep is stateless (diff-only per run) and used to re-file the same
     // finding as a new thread on every head, even after a human resolved it (observed
     // live: the same finding four times on one file). Both default on: the gate is the guarantee, the prompt
-    // hint is a cheap reduction in wasted CLI cycles — see review-sweep.js's
+    // hint is a cheap reduction in wasted CLI cycles — see the companion review sweep's
     // classifyFindings/formatReviewHistory.
     dedup_resolved_threads: true,
     inject_review_history: true,

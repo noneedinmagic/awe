@@ -1,6 +1,6 @@
 // Parses the "🧑‍⚖️ For the human, in plain words:" adjudication card that a `sustain`
 // reply appends to a review-thread comment (docs/adr — see #163's
-// formatAdjudicationSection in review-sweep.js for the writer side; both
+// formatAdjudicationSection in the companion review sweep for the writer side; both
 // scripts/claude-fix-prompt.md's pushback path and the ad-hoc /respond-review path write
 // the identical card shape). This is the reader side, added for #165: lifting card text
 // into the Telegram `needs-human` notify.

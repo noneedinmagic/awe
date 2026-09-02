@@ -168,7 +168,7 @@ export async function unresolveReviewThread(gh, threadId) {
 /**
  * Resolve a thread. Mirror of `unresolveReviewThread` above, for the reverse direction:
  * the reviewer sweep closing its own thread after re-verifying (a `withdraw` verdict —
- * see `applyAdjudications` in review-sweep.js and docs/adr/0005-reviewer-owns-thread-lifecycle.md).
+ * see `applyAdjudications` in the companion review sweep, and ADR 0005).
  * Never called for a thread a human has commented in unless the verdict carries
  * `human_intent: "clear-and-satisfied"` — that gate lives in the caller, not here.
  */
