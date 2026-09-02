@@ -592,6 +592,19 @@ export function reduce({
     const priorHandoffReason = s.handoff.reason;
     retriedOffDisputeThisEvent = DISPUTE_REASON_LABELS.has(priorHandoffReason);
     priorHumanReviewIdAtRetry = s.codex.human_review_id;
+    // Drift review on #1 round 4: a retry that is ABOUT to skip re-consuming the exact
+    // review that produced this dispute (the `skipStaleCleanOnRetry` dispute clause
+    // further down) must not null `human_review_id` here either — round 4's fix made
+    // `human_review_id` survive a head change specifically so `alreadyHandledHumanReview`
+    // keeps recognizing this same still-standing review after a later, unrelated push;
+    // nulling it here (even though this event skips consumption) throws that away with
+    // nothing to restore it, reopening the exact loop round 4 closed. Every OTHER retry
+    // still nulls it unconditionally — that's the intentional escape hatch letting a
+    // human force reconsideration of an already-handled standing review.
+    const freshHumanReviewAtRetry = codexResult?.source === 'human' && codexResult?.reviewId != null
+      && codexResult.reviewId !== priorHumanReviewIdAtRetry;
+    const preserveHumanReviewIdAtRetry = retriedOffDisputeThisEvent && codexResult?.source === 'human'
+      && !freshHumanReviewAtRetry ? priorHumanReviewIdAtRetry : null;
     s.round = 0;
     s.handoff = { done: false, notified: false, reason: null };
     // Reset the CI snapshot too, not just the counter: without this, `s.ci.sha` still
@@ -607,7 +620,7 @@ export function reduce({
     // `summoned_floor` carries forward unchanged — a retry distrusts the recognized
     // reviewer's own last verdict, not a standing summoned review's release state.
     s.codex = {
-      requested_sha: null, reviewed_sha: null, result: null, human_review_id: null,
+      requested_sha: null, reviewed_sha: null, result: null, human_review_id: preserveHumanReviewIdAtRetry,
       review_floor: Math.max(s.codex.review_floor ?? 0, codexResultId ?? 0),
       summoned_floor: s.codex.summoned_floor ?? 0,
     };

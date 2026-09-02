@@ -1584,6 +1584,57 @@ test('#188 regression guard: /ai retry off agents-disagree still dispatches on a
   assert.deepEqual(types(effects), ['dispatch-fixer']);
 });
 
+test('drift review on #1 round 4: /ai retry off a dispute, then an unrelated push, does not re-dispatch the same standing human review', () => {
+  // Full 5-step sequence from the round-4 drift review: (1) human REQUEST_CHANGES
+  // dispatches once, (2) the round disputes with no push, (3) /ai retry re-scans
+  // instead of re-dispatching (the existing #188 guard just above), (4) an unrelated
+  // push follows with the SAME review still standing (never dismissed) — this must not
+  // re-derive as fresh and burn a second, uncapped dispatch. Before this fix, the retry
+  // branch nulled `human_review_id` unconditionally even though it skipped consuming
+  // the review this event, and the head-change block's `review_floor` reset (needed for
+  // the summoned-review mechanism) offered no second guard — so step 4 re-consumed the
+  // identical review and dispatched again.
+  const dispatched = reduce({
+    ...base, prev: null,
+    codexResult: {
+      blocking: true, sha: 'sha1', source: 'human', reviewId: 9, id: 9, findings: [{ id: 1 }],
+    },
+  }).next;
+  assert.equal(dispatched.state, 'ai:fixing');
+  assert.equal(dispatched.round, 1);
+  assert.equal(dispatched.codex.human_review_id, 9);
+
+  const disputed = reduce({
+    ...base,
+    prev: { ...dispatched, roundOrigin: 'auto' },
+    codexResult: {
+      blocking: true, sha: 'sha1', source: 'human', reviewId: 9, id: 9, findings: [{ id: 1 }],
+    },
+    fixResult: { outcome: 'disputed' },
+    openThreads: [],
+  }).next;
+  assert.equal(disputed.state, 'ai:needs-human');
+  assert.equal(disputed.handoff.reason, 'agents-may-disagree');
+
+  const stillStandingAtRetry = {
+    blocking: true, sha: 'sha1', source: 'human', reviewId: 9, id: 9, findings: [{ id: 1 }],
+  };
+  const retried = reduce({
+    ...base, prev: disputed, codexResult: stillStandingAtRetry, humanCommand: { type: 'retry', id: 'c1' },
+  }).next;
+  assert.equal(retried.state, 'ai:reviewing', 'retry re-scans instead of re-dispatching on the same review');
+  assert.equal(retried.round, 0);
+  // The guard round 4 relies on: `human_review_id` survives the retry that skipped
+  // consuming it, so it's still there to compare against on the next event.
+  assert.equal(retried.codex.human_review_id, 9);
+
+  const pushed = reduce({
+    ...base, prev: retried, pr: { ...pr, headSha: 'sha2' }, codexResult: stillStandingAtRetry,
+  }).next;
+  assert.notEqual(pushed.state, 'ai:fixing', 'the same still-standing, never-dismissed review does not burn a second round');
+  assert.equal(pushed.round, 0, 'no second dispatch means no second round increment');
+});
+
 test('classifier at fixer tier is byte-identical: a real-finding no-push round with zero open threads still hands off (agents-may-disagree), never re-queues', () => {
   const prev = { ...reduce({ ...base, prev: null }).next, state: 'ai:fixing', round: 1, roundOrigin: 'auto' };
   const codexResult = { blocking: true, sha: 'sha1', findings: [{ id: 1 }] }; // no openThreadBlock
