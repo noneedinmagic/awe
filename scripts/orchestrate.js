@@ -19,12 +19,14 @@ import { buildTelegramMessage, sendTelegram as defaultSendTelegram } from './lib
 
 // Checks produced by the orchestrator itself — never counted as consumer CI.
 // Reusable-workflow job checks are named "<caller job> / <called job>" — match that
-// exact shape (a `name === marker` gate check, or a ` / <marker>` suffix for the two
+// exact shape (a `name === marker` gate check, or a ` / <marker>` suffix for the three
 // reusable-workflow jobs), not an arbitrary substring: a consumer's own legitimately
 // `required_checks`-listed check whose name merely contains one of these words (e.g.
 // "AI Orchestrator Integration Tests") must not be silently excluded and left stuck
 // pending forever (codex review round 2 finding on #1).
-const OWN_CHECK_MARKERS = ['AI Orchestrator', 'AI Claude Fix'];
+// 'Report Fix Result': the round-3 P1 fix's new job (orchestrator.yml) — without this,
+// its check run reads as consumer CI (round 3 follow-up on #1).
+const OWN_CHECK_MARKERS = ['AI Orchestrator', 'AI Claude Fix', 'Report Fix Result'];
 const isOwnCheck = (name) => name === GATE_NAME || OWN_CHECK_MARKERS.some((m) => name === m || name.endsWith(` / ${m}`));
 
 // The sticky state comment is only ever posted by the orchestrator itself, authenticated

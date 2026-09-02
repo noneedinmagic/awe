@@ -388,6 +388,8 @@ test('computeCiStatus: own checks excluded (including reusable-workflow composit
     { name: 'AI Policy Gate', status: 'completed', conclusion: 'failure' },
     { name: 'orchestrate / AI Orchestrator', status: 'in_progress', conclusion: null },
     { name: 'orchestrate / AI Claude Fix', status: 'completed', conclusion: 'failure' },
+    // Nested form the companion's forwarding shim produces (round 3 P1 fix's new job).
+    { name: 'orchestrate / forward / Report Fix Result', status: 'completed', conclusion: 'success' },
     { name: 'build', status: 'completed', conclusion: 'success' },
   ];
   assert.equal(computeCiStatus(runs, []), 'success');
