@@ -226,8 +226,14 @@ test('human REQUEST_CHANGES review is blocking evidence and bypasses the round c
 
   assert.equal(humanBlockingResult([{ ...review, state: 'APPROVED' }], [], { humans: ['oleh'], headSha: 'sha1' }),
     null, 'approvals do not drive the machine');
-  assert.equal(humanBlockingResult([review], inline, { humans: ['oleh'], headSha: 'other' }),
-    null, 'stale-SHA human review ignored');
+  // A still-standing (not dismissed) human REQUEST_CHANGES survives a head change: GitHub
+  // itself never expires it on push, only the human dismissing it does
+  // (docs/human-controls.md, "only you can clear it" — round 4 finding on #1). Its
+  // line-anchored findings are dropped (they're not trustworthy against a diff that's
+  // since moved), but it still counts as blocking.
+  const staleSha = humanBlockingResult([review], inline, { humans: ['oleh'], headSha: 'other' });
+  assert.equal(staleSha.blocking, true, 'a stale-SHA standing human review still blocks');
+  assert.equal(staleSha.findings.length, 0, 'stale-SHA inline findings are not carried forward');
   assert.equal(humanBlockingResult([{ ...review, user: { login: 'rando' } }], [], { humans: ['oleh'], headSha: 'sha1' }),
     null, 'non-listed users ignored');
   assert.equal(humanBlockingResult([review, { id: 10, state: 'DISMISSED', commit_id: 'sha1', user: { login: 'oleh' } }],
@@ -316,6 +322,35 @@ test('a standing human review dispatches a fix round once, not on every later or
     { humans: ['oleh'], headSha: 'sha1' });
   const fresh = reduce({ ...base, prev: stuckAgain, codexResult: newResult });
   assert.equal(fresh.next.state, 'ai:fixing', 'a new review id still dispatches');
+});
+
+test('a standing human review does not re-dispatch on every push under it either (round 4 finding on #1)', () => {
+  const review = { id: 9, state: 'CHANGES_REQUESTED', commit_id: 'sha1', user: { login: 'oleh' } };
+  const inline = [{ id: 1, pull_request_review_id: 9, path: 'a.js', line: 3, body: 'fix this' }];
+
+  const first = reduce({ ...base, prev: null, codexResult: humanBlockingResult([review], inline, { humans: ['oleh'], headSha: 'sha1' }) });
+  assert.equal(first.next.state, 'ai:fixing');
+  assert.equal(first.next.round, 1);
+
+  // The fixer pushes to sha2 without the human ever dismissing their review — GitHub
+  // never expires it on push, so it's still there, still CHANGES_REQUESTED, just
+  // anchored to the OLD commit now. `humanBlockingResult` (no longer SHA-gated) still
+  // reports it as blocking at the new head — that must not re-burn a fix round for the
+  // exact same, already-addressed-once review, uncapped, on every subsequent push.
+  const stillStanding = humanBlockingResult([review], inline, { humans: ['oleh'], headSha: 'sha2' });
+  const second = reduce({
+    ...base, prev: first.next, pr: { ...pr, headSha: 'sha2' }, codexResult: stillStanding,
+  });
+  assert.notEqual(second.next.state, 'ai:fixing', 'no second dispatch for the same unaddressed review');
+  assert.equal(second.next.round, 1, 'the same still-standing review does not burn a second round');
+  assert.deepEqual(types(second.effects).filter((t) => t === 'dispatch-fixer'), []);
+
+  // Nor does a later event at the SAME (already-landed) head re-derive it into a fresh
+  // dispatch — same reasoning as the fixer-failed replay case above, now reachable via
+  // a push instead of a handoff.
+  const third = reduce({ ...base, prev: second.next, pr: { ...pr, headSha: 'sha2' }, codexResult: stillStanding });
+  assert.equal(third.next.round, 1);
+  assert.deepEqual(types(third.effects).filter((t) => t === 'dispatch-fixer'), []);
 });
 
 test('humanBlockingResult: one human\'s approval does not clear another\'s standing REQUEST_CHANGES', () => {

@@ -105,14 +105,19 @@ async function react(gh, repo, commentId, content) {
  * A blocking review submitted by a listed human counts as first-class blocking
  * evidence — the phone-native way to command a fix round is to just review the PR.
  * Only REQUEST_CHANGES counts (approvals stay GitHub-native); newest human review
- * for the current head wins, dismissal un-counts it.
+ * wins, dismissal un-counts it. NOT keyed to the current head: GitHub itself never
+ * expires a REQUEST_CHANGES on push — only the human dismissing it does
+ * (docs/human-controls.md, "only you can clear it") — so a still-standing review from
+ * an older head must keep counting as blocking, or an ordinary push (an agent fix
+ * round, an unrelated human commit) silently drops the human's block the next time
+ * this is evaluated (codex review round 4 finding on #1).
  */
 export function humanBlockingResult(reviews, inlineComments, { humans, headSha }) {
   // A COMMENTED review does not clear a standing REQUEST_CHANGES on GitHub itself — only
   // an APPROVED review or an explicit dismissal does — so it must not overwrite that
   // user's latest entry below either; exclude it from the pool entirely.
   const relevant = (reviews ?? []).filter((r) =>
-    humans.includes(r.user?.login) && r.commit_id === headSha && r.state !== 'DISMISSED' && r.state !== 'COMMENTED');
+    humans.includes(r.user?.login) && r.state !== 'DISMISSED' && r.state !== 'COMMENTED');
   // One listed human's later approval must not clear another listed human's
   // still-active REQUEST_CHANGES — evaluate each reviewer's own latest review (reviews
   // arrive chronological, so a Map keeps last-write-per-user), not the single latest
@@ -129,9 +134,14 @@ export function humanBlockingResult(reviews, inlineComments, { humans, headSha }
   const blocking = [...latestPerUser.values()].filter((r) => r.state === 'CHANGES_REQUESTED');
   if (!blocking.length) return null;
   const latest = blocking.at(-1); // most recently submitted still-blocking review
-  const blockingIds = new Set(blocking.map((r) => r.id));
+  // Line-anchored findings are only trustworthy against the CURRENT diff — an older
+  // head's inline comment can point at a line that has since moved or been removed —
+  // so only surface them from a blocking review that was actually submitted against
+  // this head. `body` below stays unfiltered: it's free text, not line-anchored, and
+  // claude-fix-prompt.md's own thread fetch re-scopes to the live head anyway.
+  const blockingIdsAtHead = new Set(blocking.filter((r) => r.commit_id === headSha).map((r) => r.id));
   const findings = (inlineComments ?? [])
-    .filter((c) => blockingIds.has(c.pull_request_review_id))
+    .filter((c) => blockingIdsAtHead.has(c.pull_request_review_id))
     .map((c) => ({ id: c.id, path: c.path, line: c.line ?? c.original_line ?? null, excerpt: (c.body ?? '').slice(0, 200) }));
   // A human can request changes via the review summary alone, with no inline comments —
   // that text is the only scope the fixer would otherwise see, so surface it (`body`)
@@ -617,7 +627,13 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     baseRef: prData.base.ref,
     state: prData.state,
   };
-  if (pr.state !== 'open') {
+  // fixResultMode is let through even on a closed PR, mirroring the `policy.mode ===
+  // 'disabled'` carve-out below: a claude-fix job already in flight when the PR got
+  // closed still runs its "Report fix result" step, and that invocation must be
+  // allowed to consume FIX_OUTCOME and clear the `ai:fixing` latch via reduce() below
+  // — otherwise the sticky state is stranded at `ai:fixing` forever, surviving even a
+  // later reopen, since no other event clears it (codex review round 4 finding on #1).
+  if (pr.state !== 'open' && !fixResultMode) {
     console.log(`PR #${prNumber} is ${pr.state} — nothing to do.`);
     return;
   }
@@ -877,8 +893,12 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
         // / claude-fix-prompt.md's pushback path); `cards` is `[]` for every other reason, and
         // for a dispute PR whose threads carry no card yet (predates this feature, or never
         // deadlocked into one) — buildTelegramMessage renders the same plain handoff either way.
+        // `reviewerRoleAgents(policy)` restricts which comment author can carry a card — the
+        // PR author (or anyone else commenting on the thread) could otherwise forge the
+        // marker text and have it lifted, unattributed, into the human-facing notification
+        // (codex review round 4 finding on #1).
         const cards = effect.kind === 'needs-human' && DISPUTE_REASON_LABELS.has(effect.reason)
-          ? extractAdjudicationCards(handoffThreads)
+          ? extractAdjudicationCards(handoffThreads, reviewerRoleAgents(policy))
           : [];
         const delivered = policy.notifications.telegram.enabled
           && env.AI_ORCH_TELEGRAM_BOT_TOKEN && env.AI_ORCH_TELEGRAM_CHAT_ID
@@ -931,6 +951,34 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     }
   }
 
+  // Emitted before the sticky-comment write below (and before postGate/labels), not
+  // after: `should_fix` is claude-fix's only path to actually running (the workflow
+  // gates that job on this output), and `appendFileSync` to GITHUB_OUTPUT is a local
+  // file write that cannot fail on network — recording it here closes the window
+  // where postGate or the required-label POST further down throws AFTER the sticky
+  // comment has already persisted `next.state` (e.g. a freshly latched `ai:fixing`)
+  // but BEFORE should_fix ever reached disk: reduce() only re-emits 'dispatch-fixer'
+  // on the transition INTO `ai:fixing`, so once that's durably recorded with no
+  // corresponding dispatch, no later event retries it (codex review round 4 finding
+  // on #1). Gate/labels genuinely are safe to compute after the sticky write — they're
+  // pure functions of `next`, recomputed fresh every run — but the job output gating a
+  // side effect on a different system (claude-fix-action) is not.
+  const shouldFix = active && effectTypes.includes('dispatch-fixer') && policy.backends.fixer.includes('claude-code-action');
+  setOutput(env, 'should_fix', String(shouldFix));
+  setOutput(env, 'pr_number', String(prNumber));
+  setOutput(env, 'round', String(next.round));
+  setOutput(env, 'head_ref', pr.headRef);
+  setOutput(env, 'head_sha', pr.headSha);
+  // /ai fix carries an explicit instruction already. A human review dispatch has none —
+  // forward the standing review summary/summaries (humanBlockingResult() already
+  // aggregates every listed human's blocking review body) unconditionally, not just
+  // when findings is empty: a second reviewer's summary-only request must still reach
+  // the fixer even when a different reviewer's review happened to carry inline findings.
+  const dispatchEffect = effects.find((e) => e.type === 'dispatch-fixer');
+  const reviewBodyFallback = codexResult?.source === 'human' ? codexResult.body : '';
+  setOutput(env, 'fix_instruction', dispatchEffect?.instruction || reviewBodyFallback || '');
+  setOutput(env, 'thread_resolution_rule', threadResolutionRule(policy));
+
   const dryRunNote = active ? null
     : `Would apply labels \`${desiredLabels(next, policy).join('`, `')}\`` +
       (effectTypes.length ? ` and run: ${effectTypes.join(', ')}.` : '.');
@@ -958,8 +1006,8 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   await postGate(gh, repo, pr.headSha, gate);
 
   // /ai refresh always replies, dry-run included — informational, like /ai help, not one
-  // of the effects dry-run exists to suppress. Best-effort: a failed reply must not throw
-  // past the setOutput calls below.
+  // of the effects dry-run exists to suppress. Best-effort: a failed reply must not fail
+  // the job — should_fix and the rest are already durably recorded above regardless.
   const refreshEffect = effects.find((e) => e.type === 'refresh-report');
   if (refreshEffect) {
     await gh.request('POST', `/repos/${repo}/issues/${prNumber}/comments`, { body: renderRefreshReply(refreshEffect) })
@@ -1017,9 +1065,9 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     // bottom. `/ai status` always echoes; the automatic trigger is best-effort and only
     // runs the (still O(1), but non-zero) timeline count check when it's actually enabled.
     // Whole block is best-effort, like every other effect above: a transient failure here
-    // (timeline fetch, post, delete) must not throw past this point and skip the
-    // `setOutput` calls below — that would starve `claude-fix` of `should_fix` and drop an
-    // already-decided fixer dispatch over a disposable status copy.
+    // (timeline fetch, post, delete) must not fail the job over a disposable status copy —
+    // should_fix and the rest were already recorded before the sticky write, so a crash
+    // here can no longer strand an already-decided fixer dispatch.
     try {
       if (isStatusCommand || echoEnabled(policy)) {
         const timelineCount = await gh.countAll(`/repos/${repo}/issues/${prNumber}/timeline`);
@@ -1043,22 +1091,6 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
       console.warn(`status echo: ${err.message}`);
     }
   }
-
-  const shouldFix = active && effectTypes.includes('dispatch-fixer') && policy.backends.fixer.includes('claude-code-action');
-  setOutput(env, 'should_fix', String(shouldFix));
-  setOutput(env, 'pr_number', String(prNumber));
-  setOutput(env, 'round', String(next.round));
-  setOutput(env, 'head_ref', pr.headRef);
-  setOutput(env, 'head_sha', pr.headSha);
-  // /ai fix carries an explicit instruction already. A human review dispatch has none —
-  // forward the standing review summary/summaries (humanBlockingResult() already
-  // aggregates every listed human's blocking review body) unconditionally, not just
-  // when findings is empty: a second reviewer's summary-only request must still reach
-  // the fixer even when a different reviewer's review happened to carry inline findings.
-  const dispatchEffect = effects.find((e) => e.type === 'dispatch-fixer');
-  const reviewBodyFallback = codexResult?.source === 'human' ? codexResult.body : '';
-  setOutput(env, 'fix_instruction', dispatchEffect?.instruction || reviewBodyFallback || '');
-  setOutput(env, 'thread_resolution_rule', threadResolutionRule(policy));
 }
 
 /** Run main and report a post-fetch failure without making tests exit the process. */

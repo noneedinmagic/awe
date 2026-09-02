@@ -204,7 +204,16 @@ jobs:
           # read the repo — `gh api`, authenticated via GH_TOKEN, can.
           GH_TOKEN: ${{ github.token }}
         run: |
-          REMOTE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${HEAD_REF}" --jq .object.sha) || REMOTE_SHA=""
+          # `gh api`'s endpoint argument is parsed as a URL — a raw `#` in HEAD_REF (a
+          # legal Git branch character) is read as a URL fragment and silently dropped
+          # from the request, and a raw `%` can be misread as the start of a percent-escape;
+          # encode both (order matters: `%` first, or encoding `#`/`?` would introduce new
+          # `%`-sequences that then get double-encoded). `/` is deliberately left alone —
+          # it's the literal path separator a branch name like `feature/foo` needs.
+          ENCODED_HEAD_REF=${HEAD_REF//%/%25}
+          ENCODED_HEAD_REF=${ENCODED_HEAD_REF//#/%23}
+          ENCODED_HEAD_REF=${ENCODED_HEAD_REF//\?/%3F}
+          REMOTE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${ENCODED_HEAD_REF}" --jq .object.sha) || REMOTE_SHA=""
           if [ "$CLAUDE_OUTCOME" != "success" ]; then
             FIX_OUTCOME=failed
           elif [ -z "$EXECUTION_FILE" ]; then

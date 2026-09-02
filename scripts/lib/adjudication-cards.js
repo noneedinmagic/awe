@@ -25,18 +25,29 @@ const CARD_MARKER = '🧑‍⚖️ For the human, in plain words:';
  * rather than an exception.
  *
  * @param {{comments?: {author?: string, body?: string}[]}} thread
+ * @param {string[]} [allowedAuthors] Only a comment authored by one of these logins can
+ *   carry a card — anyone else's comment is skipped (not just its card ignored, so an
+ *   authorized card sitting BELOW a forged one from a disallowed author still wins).
+ *   Omitted (undefined) means no filtering, for backward compatibility with any caller
+ *   that hasn't been threaded a policy yet. The card is only ever legitimately written
+ *   by the fixer/reviewer identities (claude-fix-prompt.md's pushback path, the ad-hoc
+ *   review-responder path) — without this, the PR author (or anyone else who can comment
+ *   on the thread) could post the marker text themselves and have it lifted, unattributed,
+ *   straight into the human-facing Telegram notification (codex review round 4 finding on #1).
  * @returns {{author: string|null, card: string}|null}
  */
-export function extractAdjudicationCard(thread) {
+export function extractAdjudicationCard(thread, allowedAuthors) {
   const comments = Array.isArray(thread?.comments) ? thread.comments : [];
   for (let i = comments.length - 1; i >= 0; i--) {
+    const author = comments[i]?.author;
+    if (allowedAuthors && !allowedAuthors.includes(author)) continue;
     const body = comments[i]?.body;
     if (typeof body !== 'string') continue;
     const idx = body.lastIndexOf(CARD_MARKER);
     if (idx === -1) continue;
     const card = body.slice(idx).trim();
     if (card.length <= CARD_MARKER.length) continue; // the marker with nothing after it — keep scanning older comments
-    return { author: comments[i].author ?? null, card };
+    return { author: author ?? null, card };
   }
   return null;
 }
@@ -49,12 +60,13 @@ export function extractAdjudicationCard(thread) {
  * zero, without needing to know which threads were skipped and why.
  *
  * @param {object[]} threads
+ * @param {string[]} [allowedAuthors] Forwarded to `extractAdjudicationCard` — see there.
  * @returns {{path: string|null, line: number|null, author: string|null, card: string}[]}
  */
-export function extractAdjudicationCards(threads) {
+export function extractAdjudicationCards(threads, allowedAuthors) {
   const out = [];
   for (const t of threads ?? []) {
-    const found = extractAdjudicationCard(t);
+    const found = extractAdjudicationCard(t, allowedAuthors);
     if (found) out.push({ path: t.path ?? null, line: t.line ?? null, ...found });
   }
   return out;

@@ -13,7 +13,9 @@ the change to a human.
    comment's `commit_id` equals `{{HEAD_SHA}}` (the commit this round's Codex review
    evaluated) — ignore threads anchored to older commits, even if unanswered; they belong
    to a prior round or predate it. Within scope, a thread is unanswered if its latest
-   comment's author is not the PR author.
+   comment's author is neither the PR author nor you: your own earlier reply already
+   counts as an answer, even though it posts under the fixer's own bot identity, not the
+   PR author's.
    Also fetch `gh api --paginate repos/{{REPO}}/pulls/{{PR_NUMBER}}/reviews` and find any
    non-`DISMISSED` review with `commit_id` equal to `{{HEAD_SHA}}` and a body containing
    `<!-- ai-orch:local-review -->` — a human who dismissed a body-only review explicitly

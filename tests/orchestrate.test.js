@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import {
+  readFileSync, mkdtempSync, rmSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   resolveEvent, computeCiStatus, managedLabelNames, desiredLabels, findSticky,
   parseAiCommand, looksLikeAiCommand, safeHandoffThreads, classifierThreads, shouldEcho,
@@ -140,6 +144,74 @@ test('main: a fix-result invocation still clears the ai:fixing latch while polic
   // Disabled mode must still never leave a non-neutral gate blocking the PR.
   const gate = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/check-runs');
   assert.equal(gate.body.conclusion, 'neutral');
+});
+
+test('main: a fix-result invocation for a closed PR still clears the ai:fixing latch (round 4 finding on #1)', async () => {
+  const { calls, env, gh } = mainFixture();
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, sha, 'active');
+  stuck.state = 'ai:fixing';
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    return basePaginate(path);
+  };
+  const basePr = await gh.request('GET', '/repos/o/r/pulls/12');
+  const baseRequest = gh.request;
+  gh.request = async (method, path, body) => {
+    if (method === 'GET' && path === '/repos/o/r/pulls/12') return { ...basePr, state: 'closed' };
+    return baseRequest(method, path, body);
+  };
+  env.PR_NUMBER = '12';
+  env.FIX_OUTCOME = 'failed';
+
+  await main({
+    env, gh, sendTelegram: async () => true, argv: ['node', 'orchestrate.js', 'fix-result'],
+  });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  // A PR closed while claude-fix was running must still let "Report fix result" consume
+  // FIX_OUTCOME — otherwise `ai:fixing` is stranded forever, surviving even a later reopen,
+  // since no other event ever clears it.
+  assert.ok(patch, 'the stuck sticky comment is patched even though the PR is closed');
+  const state = parseStateComment(patch.body.body);
+  assert.notEqual(state.state, 'ai:fixing');
+});
+
+test('main: should_fix is recorded before postGate/labels, so a later failure there cannot strand a dispatched fix round (round 4 finding on #1)', async () => {
+  const { calls, env, gh } = mainFixture();
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/pulls/12/reviews') {
+      return [{ id: 8, user: { login: 'reviewer[bot]' }, commit_id: 'aaaa000011112222333344445555666677778888', state: 'CHANGES_REQUESTED' }];
+    }
+    if (path === '/repos/o/r/pulls/12/comments') {
+      return [{ id: 1, pull_request_review_id: 8, path: 'a.js', line: 3, body: 'fix this', user: { login: 'reviewer[bot]' } }];
+    }
+    if (path === '/repos/o/r/commits/aaaa000011112222333344445555666677778888/check-runs?filter=latest') {
+      return [{ name: 'test', status: 'completed', conclusion: 'success' }];
+    }
+    return [];
+  };
+  const baseRequest = gh.request;
+  gh.request = async (method, path, body) => {
+    if (method === 'POST' && path === '/repos/o/r/check-runs') throw new Error('check-runs POST failed');
+    return baseRequest(method, path, body);
+  };
+  const outputDir = mkdtempSync(join(tmpdir(), 'ai-orch-test-'));
+  env.GITHUB_OUTPUT = join(outputDir, 'output');
+  try {
+    await assert.rejects(() => main({ env, gh, sendTelegram: async () => true }));
+    const output = readFileSync(env.GITHUB_OUTPUT, 'utf8');
+    // The sticky comment (persisting `ai:fixing`) is written before postGate — if that
+    // POST throws, should_fix must already be on disk, or claude-fix never runs and
+    // nothing later retries the dispatch (the latch stays `ai:fixing` with no fixer job
+    // ever having started).
+    assert.match(output, /should_fix<<\w+\ntrue\n/);
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
 });
 
 test('main: failed ready Telegram send retries only the notification latch', async () => {

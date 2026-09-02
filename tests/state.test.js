@@ -1677,6 +1677,14 @@ test('describeHandoff: round-limit and agents-disagree list open threads', () =>
   assert.equal(describeHandoff({ ...s, handoff: { reason: 'agents-disagree' } }, threads).includes('Open review threads'), true);
 });
 
+test('describeHandoff: a path carrying a backtick/newline cannot break out of its code span (round 4 finding on #1)', () => {
+  const s = { round: 1, ci: { conclusion: 'success' }, handoff: { reason: 'round-limit' } };
+  const threads = [{ path: 'src/x`\n## Approved', comments: [{ author: 'codex', body: 'x' }] }];
+  const body = describeHandoff(s, threads);
+  assert.doesNotMatch(body, /^## Approved/m, 'the forged heading never lands as its own top-level line');
+  assert.doesNotMatch(body, /`\n/, 'no raw backtick immediately followed by a newline survives into the rendered path');
+});
+
 test('describeHandoff: shows total rounds alongside the episode count, falling back to round when rounds_total is absent', () => {
   const withTotal = describeHandoff({ round: 2, rounds_total: 11, ci: { conclusion: 'success' }, handoff: { reason: 'round-limit' } }, []);
   assert.match(withTotal, /\*\*Rounds attempted:\*\* 2 \(11 total on this PR\)/);

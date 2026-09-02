@@ -46,11 +46,20 @@ for (const [name, yaml] of [
   ['non-boolean telegram enabled', 'version: 1\nauthors: [a]\nhumans: [h]\nnotifications: {telegram: {enabled: "false"}}'],
   ['empty label_names value', 'version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": ""}'],
   ['non-string label_names value', 'version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": 5}'],
+  // codex review round 4 finding on #1: an uncompilable /regex/ required_checks entry
+  // otherwise parses through and only throws later, deep inside computeCiStatus, on
+  // every future orchestration event.
+  ['malformed regex required_checks entry', 'version: 1\nauthors: [a]\nhumans: [h]\nrequired_checks: ["/[/"]'],
 ]) {
   test(`rejects ${name}`, () => {
     assert.throws(() => parsePolicy(yaml), PolicyError);
   });
 }
+
+test('required_checks: a valid slash-delimited regex entry parses through unchanged', () => {
+  const p = parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\nrequired_checks: ["/^build/", "lint"]\n');
+  assert.deepEqual(p.requiredChecks, ['/^build/', 'lint']);
+});
 
 test('label_names: valid remap parses through', () => {
   const p = parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": "status: fixing"}\n');

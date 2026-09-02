@@ -91,6 +91,24 @@ function requireStringArray(value, name, { nonEmpty = false } = {}) {
   return value;
 }
 
+// Mirrors orchestrate.js's matchPattern slash-delimited detection exactly (start/end
+// slash, length > 2) — an uncompilable `/regex/` entry there currently throws deep
+// inside computeCiStatus on every future orchestration event, turning one config typo
+// into a repository-wide failing gate. Reject it here instead, at parse time, with a
+// clear message (codex review round 4 finding on #1).
+function validateRequiredChecks(patterns) {
+  for (const p of patterns) {
+    if (p.startsWith('/') && p.endsWith('/') && p.length > 2) {
+      try {
+        RegExp(p.slice(1, -1));
+      } catch (err) {
+        fail(`\`required_checks\` entry ${JSON.stringify(p)} is not a valid regex: ${err.message}`);
+      }
+    }
+  }
+  return patterns;
+}
+
 function positiveInt(value, name, fallback) {
   if (value === undefined) return fallback;
   if (!Number.isInteger(value) || value < 0) fail(`\`${name}\` must be a non-negative integer`);
@@ -303,7 +321,7 @@ export function parsePolicy(yamlText) {
       overrides,
     },
     requiredChecks: raw.required_checks
-      ? requireStringArray(raw.required_checks, 'required_checks')
+      ? validateRequiredChecks(requireStringArray(raw.required_checks, 'required_checks'))
       : DEFAULTS.required_checks,
     labelNames,
     merge: {

@@ -329,8 +329,16 @@ export function reduce({
     // `summoned_floor` resets too — moot for the OLD review (it goes stale via
     // `commit_id !== headSha` regardless), but a genuinely new summoned review posted
     // against the NEW head must start unreleased, not inherit a stale floor.
+    // `human_review_id` deliberately does NOT reset here, unlike every other codex.*
+    // field: `humanBlockingResult` (orchestrate.js) is no longer SHA-gated (round 4
+    // finding on #1 — a human's REQUEST_CHANGES stands until dismissed, regardless of
+    // how many pushes happen under it), so the same still-standing review keeps
+    // re-deriving as blocking evidence after every push. If this reset to null here,
+    // `alreadyHandledHumanReview` below would see a fresh miss and re-dispatch an
+    // uncapped fix round for the exact same, already-addressed-once review on every
+    // subsequent push, forever.
     s.codex = {
-      requested_sha: null, reviewed_sha: null, result: null, human_review_id: null, review_floor: 0, summoned_floor: 0,
+      requested_sha: null, reviewed_sha: null, result: null, human_review_id: s.codex.human_review_id, review_floor: 0, summoned_floor: 0,
     };
     s.fixer = { sha: null, outcome: null };
     s.summonedDuringFix = null;
@@ -1000,14 +1008,16 @@ export function reduce({
   const codexConsumingStates = isHumanSource
     ? ['ai:queued', 'ai:reviewing', 'ai:ready', 'ai:needs-human']
     : ['ai:queued', 'ai:reviewing'];
-  // The widened states (`ai:ready`/`ai:needs-human`) exist so a standing human review
-  // dispatches a fix round once. Without this guard, any later orchestrator run that
-  // re-gathers the same still-present (not dismissed, not superseded) review — a CI
-  // event, `/ai status`, a cron sweep — would "consume" it again and dispatch another
-  // uncapped fixer round with no new human action. A genuinely new review (new id)
-  // still goes through.
+  // NOT restricted to `ai:ready`/`ai:needs-human` (unlike the original round of this
+  // guard): a standing human review dispatches a fix round once, full stop, regardless
+  // of which of `codexConsumingStates` it's re-derived in. Without this guard, any later
+  // orchestrator run that re-gathers the same still-present (not dismissed, not
+  // superseded) review — a CI event, `/ai status`, a cron sweep, or (since
+  // `humanBlockingResult` in orchestrate.js is no longer SHA-gated — round 4 finding on
+  // #1) the very push this round itself produced, landing the PR back at `ai:queued` —
+  // would "consume" it again and dispatch another uncapped fixer round with no new
+  // human action, forever. A genuinely new review (new id) still goes through.
   const alreadyHandledHumanReview = isHumanSource
-    && ['ai:ready', 'ai:needs-human'].includes(s.state)
     && codexResult.reviewId != null && codexResult.reviewId === s.codex.human_review_id;
   // /ai retry means "distrust the last verdict, look again" — a stale *clean* result
   // re-consumed in this same call would instantly restore `ai:ready` and skip the fresh

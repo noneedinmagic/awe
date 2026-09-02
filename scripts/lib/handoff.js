@@ -58,6 +58,15 @@ export const REASONS = {
 
 const SNIPPET_LEN = 200;
 
+// A legal Git filename can carry a backtick or a literal newline (e.g.
+// ``src/x`\n## Approved``), which would otherwise break out of the code span below and
+// forge trailing content in this trusted github-actions[bot] comment — the same class of
+// risk state.js's `escapeReason` already neutralizes for risk.reasons filenames (codex
+// review round 3 finding on #1); this is a separate rendering sink round 4 flagged.
+// Duplicated rather than imported: state.js imports `describeHandoff` from this module,
+// so the reverse import would be circular.
+const escapePathForCodeSpan = (s) => String(s).replace(/`/g, 'ˋ').replace(/\r\n|\r|\n/g, ' ');
+
 function formatThread(t) {
   const first = t.comments?.[0];
   const author = first?.author ? `@${first.author}` : '(unknown)';
@@ -68,7 +77,8 @@ function formatThread(t) {
   const repliesNote = extra > 0
     ? ` (+${extra} repl${extra === 1 ? 'y' : 'ies'}, latest @${t.comments.at(-1)?.author ?? 'unknown'})`
     : '';
-  return `- \`${t.path ?? '(unknown path)'}\` — ${author}: "${snippet}${(first?.body ?? '').length > SNIPPET_LEN ? '…' : ''}"${repliesNote}`;
+  const path = t.path != null ? escapePathForCodeSpan(t.path) : '(unknown path)';
+  return `- \`${path}\` — ${author}: "${snippet}${(first?.body ?? '').length > SNIPPET_LEN ? '…' : ''}"${repliesNote}`;
 }
 
 /** Human handoff block rendered inside the sticky comment. */
