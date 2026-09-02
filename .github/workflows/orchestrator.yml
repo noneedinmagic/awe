@@ -101,6 +101,8 @@ jobs:
       checks: write
       id-token: write
       actions: read
+    outputs:
+      fix_outcome: ${{ steps.outcome.outputs.fix_outcome }}
     steps:
       - name: Check out PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -146,10 +148,15 @@ jobs:
       - name: Run Claude review response
         id: claude
         continue-on-error: true
-        # Below the job's own timeout-minutes: 30 on purpose. A JOB timeout cancels every
-        # step unconditionally (report-fix-result would never run, leaving state stuck at
-        # ai:fixing forever); a STEP timeout respects continue-on-error above and still
-        # lets "Report fix result" run and post the fixer-failed handoff.
+        # Below the job's own timeout-minutes: 30 on purpose. A JOB timeout cancels this
+        # entire job unconditionally, including "Determine fix outcome" below — no
+        # `if: always()` step survives it — so this job's `fix_outcome` output would come
+        # back empty and the separate report-fix-result job (which always() runs
+        # regardless) would report a blank outcome. A STEP timeout instead respects
+        # continue-on-error above, still lets "Determine fix outcome" classify this as
+        # failed, and keeps the job-level timeout as a backstop that should never fire in
+        # practice (the empty-output case is additionally covered by that job's own
+        # `|| 'failed'` fallback on this output).
         timeout-minutes: 20
         uses: anthropics/claude-code-action@e5ad3c7725bc2459721893f88879fef9dbcf97b0 # v1
         env:
@@ -215,17 +222,48 @@ jobs:
           echo "Claude outcome=$CLAUDE_OUTCOME execution_file=${EXECUTION_FILE:+set} remote=$REMOTE_SHA pre=$PRE_RUN_SHA → $FIX_OUTCOME"
           echo "fix_outcome=$FIX_OUTCOME" >> "$GITHUB_OUTPUT"
 
+  report-fix-result:
+    name: Report Fix Result
+    needs: [orchestrate, claude-fix]
+    # always(): claude-fix's own job conclusion can be `failure` (e.g. "Verify head has
+    # not moved" exits 1) even though its `if: always()` "Determine fix outcome" step
+    # still ran and produced a real fix_outcome output — the default implicit success()
+    # on `needs` would otherwise skip this job and leave the `ai:fixing` latch stuck
+    # forever. `should_fix` re-gates it: if orchestrate never dispatched a fix, or
+    # orchestrate itself failed (should_fix unset), there is no outcome to report.
+    if: always() && needs.orchestrate.outputs.should_fix == 'true'
+    runs-on: ${{ inputs['runs-on'] }}
+    timeout-minutes: 10
+    concurrency:
+      # Same PR-scoped group the `orchestrate` job uses (not `ai-fix-<pr>`, which only
+      # serializes against claude-fix). Claude's push here triggers a fresh
+      # pull_request:synchronize run of `orchestrate` under `ai-orch-<pr>`; without
+      # sharing that group, this step's fix-result reduce() and that run's reduce() can
+      # both read the same pre-push sticky state and race to PATCH it / request review
+      # (P1 finding on #1, round 3).
+      group: ai-orch-${{ needs.orchestrate.outputs.pr_number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+      actions: read
+    steps:
       - name: Report fix result
-        # always(): must still run — and clear the ai:fixing latch — when an earlier
-        # step failed; see the comment on "Determine fix outcome" above.
-        if: always()
         uses: noneedinmagic/awe/actions/orchestrate@live
         with:
           mode: fix-result
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.orchestrate.outputs.pr_number }}
-          FIX_OUTCOME: ${{ steps.outcome.outputs.fix_outcome }}
+          # `|| 'failed'`: covers the one path where claude-fix produces no output at all
+          # — its own job-level timeout (30m, see "Run Claude review response" above)
+          # firing before "Determine fix outcome" runs. Without this fallback, an empty
+          # string reaches none of reduce()'s outcome branches and leaves `ai:fixing`
+          # stuck exactly like the pre-split code this job replaced — "failed" instead
+          # correctly dispatches a fixer-failed handoff with the run URL.
+          FIX_OUTCOME: ${{ needs.claude-fix.outputs.fix_outcome || 'failed' }}
           # This step's own reduce() call is the one that emits the `notify` effect for
           # `fixer-failed` handoffs (fixResult is only ever processed here) — without these,
           # every fixer-failed ping silently no-ops even with valid secrets and enabled: true,

@@ -1374,8 +1374,20 @@ export function renderComment(state, { dryRunNote = null, handoffThreads = [], m
     return core;
   };
 
+  // risk.reasons quotes raw PR filenames (risk.js's listFilenames), which — unlike the
+  // hidden JSON marker above — lands in the human-visible portion of this trusted
+  // github-actions[bot] comment as plain Markdown/HTML. A legal Git filename can carry
+  // backticks or a literal newline (e.g. `.github/x\n</details>\n## Approved`), which
+  // would otherwise close the <details> block early and forge trailing content as if the
+  // bot had posted it (codex review round 3 finding on #1). Neutralize `<`/`>` (HTML/tag
+  // injection) and backtick (the reviewer's other named vector — no open code span to
+  // break out of here, but a stray one still garbles the rendered bullet), then collapse
+  // embedded newlines so one reason can never become new Markdown lines.
+  const escapeReason = (s) => s
+    .replace(/[<>`]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '`': '&#96;' }[c]))
+    .replace(/\r\n|\r|\n/g, ' ');
   const riskDetails = state.risk?.reasons?.length
-    ? ['', '<details><summary>Risk reasons</summary>', '', ...state.risk.reasons.map((r) => `- ${r}`), '', '</details>']
+    ? ['', '<details><summary>Risk reasons</summary>', '', ...state.risk.reasons.map((r) => `- ${escapeReason(r)}`), '', '</details>']
     : [];
   const historyDetails = state.history.length
     ? ['', '<details><summary>History</summary>', '',

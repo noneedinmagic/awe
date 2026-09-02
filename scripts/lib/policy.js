@@ -246,6 +246,14 @@ export function parsePolicy(yamlText) {
   if (labelNames === null || typeof labelNames !== 'object' || Array.isArray(labelNames)) {
     fail('`label_names` must be a mapping of state → display label');
   }
+  // An unusable remap (empty string, non-string) reaches desiredLabels()'s `name(key) ??
+  // key` fallback unchanged (it only substitutes on null/undefined, not on ''), so a
+  // required state label like `ai:fixing` would POST as an invalid GitHub label name —
+  // AFTER the sticky comment already recorded that state, stranding the PR with no
+  // fixer ever dispatched (round 3 finding on #1). Reject at parse time instead.
+  for (const [key, value] of Object.entries(labelNames)) {
+    if (typeof value !== 'string' || !value) fail(`\`label_names.${key}\` must be a non-empty string`);
+  }
 
   const prepr = {
     maxRounds: positiveInt(raw.prepr?.max_rounds, 'prepr.max_rounds', DEFAULTS.prepr.max_rounds),

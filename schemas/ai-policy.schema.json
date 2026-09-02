@@ -92,8 +92,8 @@
       "description": "Exact check names or /regex/ patterns; empty = all non-orchestrator checks"
     },
     "label_names": {
-      "type": "object", "additionalProperties": { "type": "string" },
-      "description": "Optional state → display-label mapping (emoji-friendly)"
+      "type": "object", "additionalProperties": { "type": "string", "minLength": 1 },
+      "description": "Optional state → display-label mapping (emoji-friendly); each value must be a non-empty, usable GitHub label name"
     },
     "merge": {
       "type": "object", "additionalProperties": false,

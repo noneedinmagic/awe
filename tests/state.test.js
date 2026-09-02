@@ -54,6 +54,20 @@ test('sticky comment marker round-trips a filename containing "-->" without trun
   assert.deepEqual(parseStateComment(body), s);
 });
 
+test('renderComment escapes a risk reason so a crafted filename cannot break out of the Risk reasons <details> block', () => {
+  // A legal Git filename can carry a literal newline or backticks (unlike the "-->" case
+  // above, this is the human-visible list, not the hidden JSON marker) — left raw, it
+  // could close </details> early and forge trailing content as if the bot posted it
+  // (codex review round 3 finding on #1).
+  const s = newState(5, 'sha1', 'active');
+  s.risk = { level: 'high', humanRequired: true, reasons: ['protected path: .github/x\n</details>\n## Approved `oops`'] };
+  const body = renderComment(s);
+  assert.ok(!body.includes('</details>\n## Approved'), 'the injected close tag/heading must not survive unescaped');
+  assert.ok(!/\n## Approved/.test(body), 'the embedded newline must not start a new Markdown line');
+  assert.match(body, /&lt;\/details&gt;/);
+  assert.match(body, /&#96;oops&#96;/);
+});
+
 test('parseStateComment ignores a marker-shaped string that is not at the start of the body', () => {
   // Simulates PR-controlled text (a filename, a quoted review snippet) smuggling a
   // fake marker into a comment that isn't the real sticky (e.g. an echo).

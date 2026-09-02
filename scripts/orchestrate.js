@@ -633,13 +633,26 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     return;
   }
   policy = applyMaxRoundsOverride(policy, env.AI_ORCH_MAX_ROUNDS);
-  if (policy.mode === 'disabled') {
+  // fixResultMode falls through instead of returning here even while disabled: a
+  // claude-fix job already in flight when the policy flipped to `disabled` still runs
+  // its "Report fix result" step, and that invocation must be allowed to consume
+  // FIX_OUTCOME and clear the `ai:fixing` latch via reduce() below — otherwise the
+  // sticky state is stranded at `ai:fixing` forever, surviving even past a later
+  // re-enable (round 3 finding on #1). Safe to let it reach the normal pipeline:
+  // `active` (false, mode !== 'active') already suppresses every other side effect
+  // (request-codex/notify/request-human-review/label sync/status echo are all gated on
+  // it below), and evaluateGate forces a neutral gate for `disabled` regardless of
+  // `next.state`, so a required check still can never block while disabled.
+  if (policy.mode === 'disabled' && !fixResultMode) {
     // Still emit a neutral gate: if a consumer has made the check required during
     // rollout, disabling orchestration must not leave PRs blocked by a missing check.
     console.log('ai-policy is disabled on the base branch — emitting neutral gate only.');
     const gate = evaluateGate({ state: 'disabled', risk: null, head_sha: pr.headSha, round: 0 }, policy);
     await postGate(gh, repo, pr.headSha, gate);
     return;
+  }
+  if (policy.mode === 'disabled') {
+    console.log('ai-policy is disabled on the base branch — reporting fix result to clear in-flight state only.');
   }
   if (!isEligible(pr, policy)) {
     console.log(`PR #${prNumber} by ${pr.author} is not managed (allowlist/opt-in/draft/fork).`);
@@ -895,17 +908,22 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
       } else if (effect.type === 'request-human-review') {
         // GitHub rejects the whole request if it includes the PR's own author.
         const reviewers = policy.humans.filter((h) => h !== pr.author);
-        if (reviewers.length) {
-          const requested = await gh.request('POST', `/repos/${repo}/pulls/${prNumber}/requested_reviewers`,
-            { reviewers }).then(() => true, (err) => { console.warn(`review request: ${err.message}`); return false; });
-          if (!requested) {
-            // Roll back whichever latch this effect earned, so the next event retries it
-            // (codex review round 2 finding on #1) — mirrors the notify rollback above.
-            // handoff.done/readyReviewRequested are set by mutually exclusive states
-            // (ai:needs-human vs ai:ready), so only one is ever true here.
-            if (next.state === 'ai:needs-human') next.handoff = { ...next.handoff, done: false };
-            else next.readyReviewRequested = false;
-          }
+        // No non-author reviewer exists (e.g. policy.humans has exactly one entry and
+        // it's the PR's own author) — nothing was actually requested, so this must be
+        // treated the same as a failed request below, not silently left latched as
+        // done (round 3 finding on #1): otherwise the latch never re-opens, not even
+        // once a second human is added to the base policy later.
+        const requested = reviewers.length
+          ? await gh.request('POST', `/repos/${repo}/pulls/${prNumber}/requested_reviewers`,
+            { reviewers }).then(() => true, (err) => { console.warn(`review request: ${err.message}`); return false; })
+          : false;
+        if (!requested) {
+          // Roll back whichever latch this effect earned, so the next event retries it
+          // (codex review round 2 finding on #1) — mirrors the notify rollback above.
+          // handoff.done/readyReviewRequested are set by mutually exclusive states
+          // (ai:needs-human vs ai:ready), so only one is ever true here.
+          if (next.state === 'ai:needs-human') next.handoff = { ...next.handoff, done: false };
+          else next.readyReviewRequested = false;
         }
       }
     }

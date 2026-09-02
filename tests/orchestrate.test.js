@@ -88,6 +88,60 @@ test('main: failed human review request rolls back its own latch for retry (code
   assert.equal(state.readyReviewRequested, false);
 });
 
+test('main: no non-author reviewer left rolls back the request-human-review latch, same as a failed request (round 3 finding on #1)', async () => {
+  // `policy.humans` has exactly one entry and it's the PR's own author — the author
+  // filter in orchestrate.js leaves `reviewers` empty, so nothing is POSTed at all.
+  const authorOnlyPolicy = mainPolicy.replace('humans: [human]', 'humans: ["author[bot]"]');
+  const { calls, env, gh } = mainFixture({ policyYaml: authorOnlyPolicy });
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  assert.equal(calls.filter((c) => c.path === '/repos/o/r/pulls/12/requested_reviewers').length, 0);
+  const sticky = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/issues/12/comments');
+  const state = parseStateComment(sticky.body.body);
+  // Left latched as done, this never re-opens — not even once a second human is added
+  // to the base policy later, since reduce() only re-emits the effect while the latch
+  // reads false.
+  assert.equal(state.readyReviewRequested, false);
+});
+
+test('main: a fix-result invocation still clears the ai:fixing latch while policy is disabled (round 3 finding on #1)', async () => {
+  const disabledPolicy = mainPolicy.replace('mode: active', 'mode: disabled');
+  const { calls, env, gh } = mainFixture({ policyYaml: disabledPolicy });
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, sha, 'active');
+  stuck.state = 'ai:fixing';
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    return basePaginate(path);
+  };
+  env.PR_NUMBER = '12';
+  env.FIX_OUTCOME = 'failed';
+
+  await main({
+    env, gh, sendTelegram: async () => true, argv: ['node', 'orchestrate.js', 'fix-result'],
+  });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  assert.ok(patch, 'the stuck sticky comment is patched, not left untouched');
+  const state = parseStateComment(patch.body.body);
+  // A claude-fix job already in flight when policy flipped to `disabled` must still be
+  // allowed to consume FIX_OUTCOME here — otherwise `ai:fixing` is stranded forever,
+  // surviving even a later re-enable.
+  assert.notEqual(state.state, 'ai:fixing');
+
+  // `active` (false, mode !== 'active') suppresses request-codex/notify/request-human-review/
+  // labels — none of those must fire just because a fix-result was consumed while disabled.
+  assert.equal(calls.filter((c) => c.path === '/repos/o/r/pulls/12/requested_reviewers').length, 0);
+  assert.equal(calls.filter((c) => c.path === '/repos/o/r/issues/12/labels').length, 0);
+  // Disabled mode must still never leave a non-neutral gate blocking the PR.
+  const gate = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/check-runs');
+  assert.equal(gate.body.conclusion, 'neutral');
+});
+
 test('main: failed ready Telegram send retries only the notification latch', async () => {
   const { calls, env, gh } = mainFixture();
   await main({ env, gh, sendTelegram: async () => false });

@@ -44,11 +44,18 @@ for (const [name, yaml] of [
   ['unknown nested risk key (typo)', 'version: 1\nauthors: [a]\nhumans: [h]\nrisk: {max_file_changed: 5}'],
   ['unknown override key', 'version: 1\nauthors: [a]\nhumans: [h]\nrisk: {overrides: [{paths: [x], risk: low, extra: 1}]}'],
   ['non-boolean telegram enabled', 'version: 1\nauthors: [a]\nhumans: [h]\nnotifications: {telegram: {enabled: "false"}}'],
+  ['empty label_names value', 'version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": ""}'],
+  ['non-string label_names value', 'version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": 5}'],
 ]) {
   test(`rejects ${name}`, () => {
     assert.throws(() => parsePolicy(yaml), PolicyError);
   });
 }
+
+test('label_names: valid remap parses through', () => {
+  const p = parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": "status: fixing"}\n');
+  assert.equal(p.labelNames['ai:fixing'], 'status: fixing');
+});
 
 test('echo_frequency: custom value, and both 0 and null disable auto-echo', () => {
   const custom = parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\necho_frequency: 50\n');
