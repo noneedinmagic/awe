@@ -43,6 +43,7 @@ for (const [name, yaml] of [
   ['unknown top-level key (typo)', 'version: 1\nauthors: [a]\nhumans: [h]\nrequired_check: [build]'],
   ['unknown nested risk key (typo)', 'version: 1\nauthors: [a]\nhumans: [h]\nrisk: {max_file_changed: 5}'],
   ['unknown override key', 'version: 1\nauthors: [a]\nhumans: [h]\nrisk: {overrides: [{paths: [x], risk: low, extra: 1}]}'],
+  ['non-boolean telegram enabled', 'version: 1\nauthors: [a]\nhumans: [h]\nnotifications: {telegram: {enabled: "false"}}'],
 ]) {
   test(`rejects ${name}`, () => {
     assert.throws(() => parsePolicy(yaml), PolicyError);

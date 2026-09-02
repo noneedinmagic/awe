@@ -303,7 +303,9 @@ export function parsePolicy(yamlText) {
       method: raw.merge?.method ?? DEFAULTS.merge.method,
     },
     notifications: {
-      telegram: { enabled: raw.notifications?.telegram?.enabled ?? DEFAULTS.notifications.telegram.enabled },
+      telegram: {
+        enabled: bool(raw.notifications?.telegram?.enabled, 'notifications.telegram.enabled', DEFAULTS.notifications.telegram.enabled),
+      },
     },
     prepr,
   };

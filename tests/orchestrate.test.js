@@ -56,14 +56,18 @@ function mainFixture({ failSticky = false, policyYaml = mainPolicy } = {}) {
   return { calls, gh, env };
 }
 
-test('main: persists ready state before requesting human review', async () => {
+test('main: requests human review before persisting the state that latches it as done (codex review round 1 finding on #1)', async () => {
   const { calls, env, gh } = mainFixture();
   await main({ env, gh, sendTelegram: async () => true });
 
   const persist = calls.findIndex((c) => c.method === 'POST' && c.path === '/repos/o/r/issues/12/comments');
   const reviewRequest = calls.findIndex((c) => c.method === 'POST' && c.path === '/repos/o/r/pulls/12/requested_reviewers');
   assert.ok(persist >= 0, 'sticky state is posted');
-  assert.ok(reviewRequest > persist, 'state persists before the review request effect');
+  // reduce() sets handoff.done/readyReviewRequested true in-memory before this call, and
+  // the sticky write below persists that latch — so the review request must happen first:
+  // a crash between the two would otherwise leave the PR permanently believing the review
+  // was already requested when it never was, with no later event able to retry it.
+  assert.ok(reviewRequest >= 0 && reviewRequest < persist, 'review request effect runs before its latch is persisted');
 });
 
 test('main: failed ready Telegram send retries only the notification latch', async () => {

@@ -42,6 +42,18 @@ test('parseStateComment backfills failureConfirmedSha as null for a pre-migratio
   assert.equal(parseStateComment(body).ci.failureConfirmedSha, null);
 });
 
+test('sticky comment marker round-trips a filename containing "-->" without truncating the HTML comment', () => {
+  // A valid Git filename can contain "-->", which would otherwise terminate the hidden
+  // marker's HTML comment early and leave the rest unparseable JSON (codex review round 1
+  // finding on #1).
+  const s = newState(5, 'sha1', 'active');
+  s.risk = { level: 'high', humanRequired: true, reasons: ['protected path: .github/evil-->name.js'] };
+  const body = renderComment(s);
+  const [, payload] = body.split('\n');
+  assert.ok(!payload.includes('-->'), 'the embedded payload never contains a literal "-->"');
+  assert.deepEqual(parseStateComment(body), s);
+});
+
 test('parseStateComment ignores a marker-shaped string that is not at the start of the body', () => {
   // Simulates PR-controlled text (a filename, a quoted review snippet) smuggling a
   // fake marker into a comment that isn't the real sticky (e.g. an echo).

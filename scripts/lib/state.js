@@ -1327,7 +1327,16 @@ const GITHUB_COMMENT_MAX = 65536;
  * disposable copy it posts can never be mistaken for (or parsed as) the state store.
  */
 export function renderComment(state, { dryRunNote = null, handoffThreads = [], marker = true, policyWarnings = [] } = {}) {
-  const markerLines = marker ? [`${MARKER_START}\n${JSON.stringify(state)}\n${MARKER_END}`] : [];
+  // PR-controlled text (e.g. risk.reasons quoting a changed filename) can legally contain
+  // "-->" — a valid Git filename like `.github/evil-->name.js` — which would otherwise
+  // terminate this HTML comment early and make parseStateComment read a truncated,
+  // unparseable JSON blob (silently falls back to "no state", re-driving every effect).
+  // `-->` can only ever occur inside a JSON *string* value in this output (JSON's own
+  // grammar never emits a bare `>`), so rewriting it to the equivalent `>` escape is
+  // always safe and round-trips through JSON.parse unchanged — no change needed on the
+  // read side.
+  const json = JSON.stringify(state).replaceAll('-->', '--\\u003e');
+  const markerLines = marker ? [`${MARKER_START}\n${json}\n${MARKER_END}`] : [];
   // #277: advisory policy sanity warnings are recomputed every run (never part of the
   // JSON state, so they appear while the policy is wrong and vanish when fixed) and are
   // otherwise part of the un-droppable `core` block — built by a closure, not inline,

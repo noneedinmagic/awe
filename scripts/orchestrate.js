@@ -839,38 +839,62 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
       : await safeHandoffThreads(gh, repo, prNumber, policy))
     : [];
 
-  // Telegram delivery must be resolved (and any latch it failed to earn rolled back)
-  // *before* the sticky comment below persists `next` — otherwise a dropped send (bot
-  // down, rate-limited, or the secret simply unset for this run) is recorded as sent and
-  // never retried, silently losing the ping for the rest of the episode.
+  // Telegram delivery, the Codex review request, and the human review request must all be
+  // resolved (and any latch a failed one earned rolled back) *before* the sticky comment
+  // below persists `next` — otherwise a dropped call here (bot down, rate-limited, a
+  // transient GitHub error) is recorded as sent/requested and never retried: reduce() only
+  // re-emits 'request-codex' while `codex.requested_sha !== pr.headSha`, and only re-emits
+  // 'request-human-review' while `handoff.done`/`readyReviewRequested` is still false —
+  // both already flipped true in `next` by this point, so a crash between here and the
+  // sticky write would otherwise strand the PR on that latch with no later event able to
+  // tell "this really was requested" from "we only meant to" (codex review round 1 finding
+  // on #1). Gate/label effects further below don't need this: they're recomputed fresh
+  // from `next` every run, so a failure there just gets retried on the next event.
   if (active) {
     for (const effect of effects) {
-      if (effect.type !== 'notify') continue;
-      // #165: lift each blocking thread's adjudication card into the Telegram message —
-      // only for the dispute reasons a card is ever written for (formatAdjudicationSection
-      // / claude-fix-prompt.md's pushback path); `cards` is `[]` for every other reason, and
-      // for a dispute PR whose threads carry no card yet (predates this feature, or never
-      // deadlocked into one) — buildTelegramMessage renders the same plain handoff either way.
-      const cards = effect.kind === 'needs-human' && DISPUTE_REASON_LABELS.has(effect.reason)
-        ? extractAdjudicationCards(handoffThreads)
-        : [];
-      const delivered = policy.notifications.telegram.enabled
-        && env.AI_ORCH_TELEGRAM_BOT_TOKEN && env.AI_ORCH_TELEGRAM_CHAT_ID
-        && await sendTelegram(buildTelegramMessage({
-          kind: effect.kind, repo, prNumber, prTitle: pr.title, reason: effect.reason, risk, runUrl: effect.runUrl, round: effect.round, cards,
-          // #144: the three-axis glyph row's other two facts — `risk` above is the third.
-          codexResult: next.codex.result, ciConclusion: next.ci.conclusion,
-        }));
-      if (!delivered) {
-        // Roll back only the notify latch, not `readyReviewRequested` — that one also
-        // guards `request-human-review`, which already succeeded and must not be reissued.
-        if (effect.kind === 'ready') next.readyNotified = false;
-        // Roll back only the notify latch, not `done` — `done` also guards
-        // `request-human-review`, which already succeeded and must not be reissued.
-        else if (effect.kind === 'needs-human') next.handoff = { ...next.handoff, notified: false };
-        // See state.js's `s.noOp` replay block: a failed/disabled send here would
-        // otherwise be lost for good once the round-scoped latch persists as "sent".
-        else if (effect.kind === 'no-op-round') next.noOp = { ...next.noOp, notified: false };
+      if (effect.type === 'notify') {
+        // #165: lift each blocking thread's adjudication card into the Telegram message —
+        // only for the dispute reasons a card is ever written for (formatAdjudicationSection
+        // / claude-fix-prompt.md's pushback path); `cards` is `[]` for every other reason, and
+        // for a dispute PR whose threads carry no card yet (predates this feature, or never
+        // deadlocked into one) — buildTelegramMessage renders the same plain handoff either way.
+        const cards = effect.kind === 'needs-human' && DISPUTE_REASON_LABELS.has(effect.reason)
+          ? extractAdjudicationCards(handoffThreads)
+          : [];
+        const delivered = policy.notifications.telegram.enabled
+          && env.AI_ORCH_TELEGRAM_BOT_TOKEN && env.AI_ORCH_TELEGRAM_CHAT_ID
+          && await sendTelegram(buildTelegramMessage({
+            kind: effect.kind, repo, prNumber, prTitle: pr.title, reason: effect.reason, risk, runUrl: effect.runUrl, round: effect.round, cards,
+            // #144: the three-axis glyph row's other two facts — `risk` above is the third.
+            codexResult: next.codex.result, ciConclusion: next.ci.conclusion,
+          }));
+        if (!delivered) {
+          // Roll back only the notify latch, not `readyReviewRequested` — that one also
+          // guards `request-human-review`, which already succeeded and must not be reissued.
+          if (effect.kind === 'ready') next.readyNotified = false;
+          // Roll back only the notify latch, not `done` — `done` also guards
+          // `request-human-review`, which already succeeded and must not be reissued.
+          else if (effect.kind === 'needs-human') next.handoff = { ...next.handoff, notified: false };
+          // See state.js's `s.noOp` replay block: a failed/disabled send here would
+          // otherwise be lost for good once the round-scoped latch persists as "sent".
+          else if (effect.kind === 'no-op-round') next.noOp = { ...next.noOp, notified: false };
+        }
+      } else if (effect.type === 'request-codex') {
+        if (policy.backends.reviewer[0] === 'codex') {
+          await gh.request('POST', `/repos/${repo}/issues/${prNumber}/comments`,
+            { body: `@codex review\n\n<!-- ai-orch:codex-request ${effect.sha} -->` });
+        } else {
+          // local-agent backend: the latched codex.requested_sha in the sticky marker
+          // is the work queue the server-side review sweep polls — nothing to post.
+          console.log(`Review of ${effect.sha} queued for the local-agent sweep.`);
+        }
+      } else if (effect.type === 'request-human-review') {
+        // GitHub rejects the whole request if it includes the PR's own author.
+        const reviewers = policy.humans.filter((h) => h !== pr.author);
+        if (reviewers.length) {
+          await gh.request('POST', `/repos/${repo}/pulls/${prNumber}/requested_reviewers`,
+            { reviewers }).catch((err) => console.warn(`review request: ${err.message}`));
+        }
       }
     }
   }
@@ -951,26 +975,8 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
         .catch((err) => console.warn(`label add ${optionalToAdd.join(', ')}: ${err.message}`));
     }
 
-    for (const effect of effects) {
-      if (effect.type === 'request-codex') {
-        if (policy.backends.reviewer[0] === 'codex') {
-          await gh.request('POST', `/repos/${repo}/issues/${prNumber}/comments`,
-            { body: `@codex review\n\n<!-- ai-orch:codex-request ${effect.sha} -->` });
-        } else {
-          // local-agent backend: the latched codex.requested_sha in the sticky marker
-          // is the work queue the server-side review sweep polls — nothing to post.
-          console.log(`Review of ${effect.sha} queued for the local-agent sweep.`);
-        }
-      } else if (effect.type === 'request-human-review') {
-        // GitHub rejects the whole request if it includes the PR's own author.
-        const reviewers = policy.humans.filter((h) => h !== pr.author);
-        if (reviewers.length) {
-          await gh.request('POST', `/repos/${repo}/pulls/${prNumber}/requested_reviewers`,
-            { reviewers }).catch((err) => console.warn(`review request: ${err.message}`));
-        }
-      }
-      // 'notify' effects are sent earlier, before the sticky comment persists (see above).
-    }
+    // 'notify'/'request-codex'/'request-human-review' effects are all sent earlier,
+    // before the sticky comment persists (see above).
 
     // Status echo: a disposable, human-only copy of the sticky comment at the bottom of
     // the thread (see docs/ai-command.md `/ai status`) — the canonical comment above never

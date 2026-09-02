@@ -25,7 +25,7 @@ the change to a human.
 1b. **Unresolved threads are durable scope regardless of commit anchor.** Also fetch
    unresolved review threads via GraphQL, **all pages** — this PR may have more than 100
    review threads, and an unresolved one can be on any page, not just the first:
-   `gh api graphql -f query='query($cursor:String){repository(owner:"OWNER",name:"NAME"){pullRequest(number:{{PR_NUMBER}}){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:50){nodes{author{login} body path}}}}}}}' -f cursor=null`
+   `gh api graphql -f query='query($cursor:String){repository(owner:"OWNER",name:"NAME"){pullRequest(number:{{PR_NUMBER}}){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:50){nodes{author{login} body path}}}}}}}' -F cursor=null`
    (substitute owner/name from {{REPO}}). If the response's `pageInfo.hasNextPage` is
    true, repeat the same call with `-f cursor="<pageInfo.endCursor>"` until it is false,
    collecting `nodes` from every page. Every thread with `isResolved: false` whose
