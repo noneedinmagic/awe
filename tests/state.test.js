@@ -324,7 +324,7 @@ test('fixer dispute without push, open-thread block, threads still open → agen
 });
 
 // Reconstructed from a live PR's stored state blob: round 2 was
-// dispatched purely by review-sweep's open-thread block over one still-unresolved thread
+// dispatched purely by the review sweep's open-thread block over one still-unresolved thread
 // from round 1; Claude resolved it and correctly changed no code. The real round-2 review
 // predates OPEN_THREAD_BLOCK_MARKER and carries no marker — `openThreadBlock: true` here
 // is a reconstruction of what the marker would have recorded, not a live fetch.

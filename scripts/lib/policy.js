@@ -211,7 +211,7 @@ export function parsePolicy(yamlText) {
     fail('`reviewers.actors` is required when `backends.reviewer` includes `local-agent`');
   }
   // Both non-default tiers depend on the sweep re-verifying/adjudicating — cloud codex
-  // can't be summoned by a bot to do that (see review-sweep.js's header) and a pure-codex
+  // can't be summoned by a bot to do that (see the companion review sweep's header) and a pure-codex
   // policy has no sweep tick at all. Fail at parse time rather than silently leaving every
   // pushed-back thread with no resolver.
   if (threadAuthority !== 'fixer' && !backends.reviewer.includes('local-agent')) {
@@ -316,7 +316,7 @@ export function echoEnabled(policy) {
   return policy.echoFrequency !== null;
 }
 
-// Exported for review-sweep.js's groupThreadsOf: which vendor group a reviewer identity
+// Exported for the companion review sweep's groupThreadsOf: which vendor group a reviewer identity
 // belongs to, so a thread opened by any reviewer in that group (not just this exact
 // login) can be adopted for re-verification/resolution — see docs/adr/0005.
 export function vendorOf(login, vendors) {
@@ -361,7 +361,7 @@ export function recognizedReviewActors(policy) {
 
 /**
  * Subset of `recognizedReviewActors()` that actually runs the local-agent sweep
- * (review-sweep.js) and is therefore trusted to emit ESCALATE_MARKER/OPEN_THREAD_BLOCK_MARKER
+ * (the companion's review sweep) and is therefore trusted to emit ESCALATE_MARKER/OPEN_THREAD_BLOCK_MARKER
  * (see inspectReview's `localReviewActors` opt). Empty when `local-agent` isn't a
  * configured reviewer backend — a pure cloud-`codex` review body is model-generated from
  * the untrusted diff and must never be trusted with these markers. `codexActor` is always
