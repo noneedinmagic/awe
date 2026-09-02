@@ -173,6 +173,13 @@ jobs:
 
       - name: Determine fix outcome
         id: outcome
+        # always(): a failure in any earlier step (checkout, head verification, prompt
+        # render — none of which carry continue-on-error) would otherwise make GitHub's
+        # default success() condition skip this step and "Report fix result" below,
+        # leaving ai:fixing state stuck forever with no fix-result event to clear it.
+        # steps.claude.outcome reads 'skipped' (not 'success') when that happens, so the
+        # CLAUDE_OUTCOME check below still correctly classifies it as failed.
+        if: always()
         env:
           HEAD_REF: ${{ needs.orchestrate.outputs.head_ref }}
           PRE_RUN_SHA: ${{ needs.orchestrate.outputs.head_sha }}
@@ -209,6 +216,9 @@ jobs:
           echo "fix_outcome=$FIX_OUTCOME" >> "$GITHUB_OUTPUT"
 
       - name: Report fix result
+        # always(): must still run — and clear the ai:fixing latch — when an earlier
+        # step failed; see the comment on "Determine fix outcome" above.
+        if: always()
         uses: noneedinmagic/awe/actions/orchestrate@live
         with:
           mode: fix-result

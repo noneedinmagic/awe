@@ -1267,18 +1267,21 @@ export function reduce({
   }
 
   // A dry-run preview can reach `ai:needs-human` without ever requesting/notifying (the
-  // effects above were only narrated, never sent). Once activated, replay both once.
-  if (active && s.state === 'ai:needs-human' && !s.handoff.done) {
-    s.handoff.done = true;
-    s.handoff.notified = true;
-    effects.push({ type: 'request-human-review' },
-      { type: 'notify', kind: 'needs-human', reason: s.handoff.reason, ...(s.handoff.runUrl ? { runUrl: s.handoff.runUrl } : {}) });
-  } else if (active && s.state === 'ai:needs-human' && !s.handoff.notified) {
-    // The review request already went out (`done`); only the Telegram ping failed or was
-    // disabled. Retry just the notify — re-issuing `request-human-review` here would spam
-    // GitHub's requested-reviewers endpoint on every event for as long as delivery fails.
-    s.handoff.notified = true;
-    effects.push({ type: 'notify', kind: 'needs-human', reason: s.handoff.reason, ...(s.handoff.runUrl ? { runUrl: s.handoff.runUrl } : {}) });
+  // effects above were only narrated, never sent). Once activated, replay each once —
+  // independently, same split as the ai:ready block below, not else-if chained: a failed
+  // `request-human-review` (orchestrate.js rolls back only `done` on that failure, codex
+  // review round 2 finding on #1) must retry just the request without re-sending an
+  // already-delivered ping, the same way a failed/disabled Telegram send below already
+  // retries just the notify without re-requesting an already-sent review.
+  if (active && s.state === 'ai:needs-human') {
+    if (!s.handoff.done) {
+      s.handoff.done = true;
+      effects.push({ type: 'request-human-review' });
+    }
+    if (!s.handoff.notified) {
+      s.handoff.notified = true;
+      effects.push({ type: 'notify', kind: 'needs-human', reason: s.handoff.reason, ...(s.handoff.runUrl ? { runUrl: s.handoff.runUrl } : {}) });
+    }
   }
 
   // Same replay for ai:ready: a dry-run preview that promoted to ai:ready never sent

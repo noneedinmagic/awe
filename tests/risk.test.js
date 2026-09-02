@@ -32,6 +32,13 @@ test('glob semantics', () => {
   assert.ok(matchesAny('go.mod', ['go.mod', 'go.sum']));
 });
 
+test('glob semantics: leading `/` root-anchors instead of matching a literal slash (codex review round 2 finding on #1)', () => {
+  // GitHub's PR-files API returns filenames repo-relative, never with a leading slash.
+  assert.ok(globToRegExp('/src/auth/**').test('src/auth/login.ts'));
+  assert.ok(globToRegExp('/README.md').test('README.md'));
+  assert.ok(!globToRegExp('/README.md').test('docs/README.md'), 'root anchor, not any-depth');
+});
+
 test('plain small change is low risk', () => {
   const r = classifyRisk([f('src/app.ts', 10, 2)], policy);
   assert.deepEqual([r.level, r.humanRequired], ['low', false]);
@@ -86,6 +93,26 @@ test('lowering override does not apply to a mixed PR with unrelated risk', () =>
   // one docs file (override-eligible) plus enough other files to bump to medium.
   const mixed = classifyRisk([f('docs/x.md'), f('a'), f('b'), f('c')], policy);
   assert.equal(mixed.level, 'medium', 'override must not underreport risk from the other files');
+});
+
+test('classifyRisk: many override reasons stay bounded so the un-droppable state marker cannot blow the comment cap (codex review round 2 finding on #1)', () => {
+  // 50 raise-overrides, all matching the same file (via a catch-all `**/*` alongside a
+  // long decorative path that pads out the reason text) — every one still applies its
+  // level, but only a bounded prefix of the reason text is kept.
+  const longPad = 'x'.repeat(200);
+  const manyOverrides = parsePolicy(`
+version: 1
+authors: [a]
+humans: [h]
+risk:
+  overrides:
+${Array.from({ length: 50 }, (_, i) => `    - { paths: ["**/*", "${longPad}${i}"], risk: high }`).join('\n')}
+`);
+  const result = classifyRisk([f('a.ts')], manyOverrides);
+  assert.equal(result.level, 'high', 'every matching override still sets the level');
+  const totalReasonChars = result.reasons.reduce((n, r) => n + r.length, 0);
+  assert.ok(totalReasonChars < 3000, `override reasons must stay well under the comment budget, got ${totalReasonChars} chars`);
+  assert.ok(result.reasons.some((r) => /more matching override reason\(s\) omitted/.test(r)), 'omitted overrides are summarized, not silently dropped');
 });
 
 // #144/#204: cause codes drive `human:*` labels — a PR can earn several at once, and

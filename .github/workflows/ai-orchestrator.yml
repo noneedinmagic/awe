@@ -14,7 +14,9 @@ name: AI PR Orchestration
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, edited]
+    # See templates/consumer-workflow.yml for the full rationale on each type — kept in
+    # sync with it by hand, since this repo's caller predates the template split.
+    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize, labeled, unlabeled, edited]
   pull_request_review:
     types: [submitted, dismissed]
   issue_comment:

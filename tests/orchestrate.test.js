@@ -70,6 +70,24 @@ test('main: requests human review before persisting the state that latches it as
   assert.ok(reviewRequest >= 0 && reviewRequest < persist, 'review request effect runs before its latch is persisted');
 });
 
+test('main: failed human review request rolls back its own latch for retry (codex review round 2 finding on #1)', async () => {
+  const { calls, env, gh } = mainFixture();
+  const baseRequest = gh.request;
+  gh.request = async (method, path, body) => {
+    if (method === 'POST' && path === '/repos/o/r/pulls/12/requested_reviewers') throw new Error('422 Unprocessable');
+    return baseRequest(method, path, body);
+  };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  const sticky = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/issues/12/comments');
+  const state = parseStateComment(sticky.body.body);
+  // Unlike a delivered request, a failed one must not be recorded as done — otherwise
+  // reduce() never re-emits 'request-human-review' on a later event and the review is
+  // lost for the rest of the episode.
+  assert.equal(state.readyReviewRequested, false);
+});
+
 test('main: failed ready Telegram send retries only the notification latch', async () => {
   const { calls, env, gh } = mainFixture();
   await main({ env, gh, sendTelegram: async () => false });
@@ -321,6 +339,20 @@ test('computeCiStatus: own checks excluded (including reusable-workflow composit
   assert.equal(computeCiStatus(runs, []), 'success');
   assert.equal(computeCiStatus([...runs, { name: 'test', status: 'in_progress', conclusion: null }], []), 'pending');
   assert.equal(computeCiStatus([...runs, { name: 'test', status: 'completed', conclusion: 'failure' }], []), 'failure');
+});
+
+test('computeCiStatus: a consumer check merely containing an own-check word is not excluded (codex review round 2 finding on #1)', () => {
+  const runs = [
+    { name: 'orchestrate / AI Orchestrator', status: 'completed', conclusion: 'success' },
+    // A real consumer CI job whose name happens to contain "AI Orchestrator" as a
+    // substring — must still count as relevant CI, not be silently dropped.
+    { name: 'AI Orchestrator Integration Tests', status: 'completed', conclusion: 'success' },
+  ];
+  assert.equal(
+    computeCiStatus(runs, ['AI Orchestrator Integration Tests']),
+    'success',
+    'a required check must not be reported pending forever just because its name contains an own-check word',
+  );
 });
 
 test('computeCiStatus: required patterns must all be present and green', () => {

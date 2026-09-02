@@ -10,7 +10,11 @@ on:
     # edited: fires on base-branch retarget — without it, a stacked PR whose base
     # merges (GitHub retargets it to the default branch) sits unnoticed until some
     # other event; with it, the PR enters the machine the moment its base flips.
-    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, edited]
+    # converted_to_draft: without it, a PR pulled back to draft never re-enters the
+    # machine — the runtime draft guard (isEligible, scripts/lib/policy.js) that would
+    # neutralize a stale ai:ready/ai:fixing gate only runs when SOME event fires, and no
+    # other listed type covers this one (codex review round 2 finding on #1).
+    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize, labeled, unlabeled, edited]
   pull_request_review:
     types: [submitted, dismissed]
   # Human control surface: /ai retry|fix|status|refresh comments (listed humans only) and

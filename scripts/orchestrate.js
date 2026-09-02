@@ -18,10 +18,14 @@ import { evaluateGate, GATE_NAME } from './lib/gate.js';
 import { buildTelegramMessage, sendTelegram as defaultSendTelegram } from './lib/telegram.js';
 
 // Checks produced by the orchestrator itself — never counted as consumer CI.
-// Reusable-workflow job checks are named "<caller job> / <called job>", so match
-// by substring, not equality.
-const OWN_CHECK_MARKERS = [GATE_NAME, 'AI Orchestrator', 'AI Claude Fix'];
-const isOwnCheck = (name) => OWN_CHECK_MARKERS.some((m) => name.includes(m));
+// Reusable-workflow job checks are named "<caller job> / <called job>" — match that
+// exact shape (a `name === marker` gate check, or a ` / <marker>` suffix for the two
+// reusable-workflow jobs), not an arbitrary substring: a consumer's own legitimately
+// `required_checks`-listed check whose name merely contains one of these words (e.g.
+// "AI Orchestrator Integration Tests") must not be silently excluded and left stuck
+// pending forever (codex review round 2 finding on #1).
+const OWN_CHECK_MARKERS = ['AI Orchestrator', 'AI Claude Fix'];
+const isOwnCheck = (name) => name === GATE_NAME || OWN_CHECK_MARKERS.some((m) => name === m || name.endsWith(` / ${m}`));
 
 // The sticky state comment is only ever posted by the orchestrator itself, authenticated
 // with GITHUB_TOKEN — never trust a same-marker comment from any other commenter, or a
@@ -892,8 +896,16 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
         // GitHub rejects the whole request if it includes the PR's own author.
         const reviewers = policy.humans.filter((h) => h !== pr.author);
         if (reviewers.length) {
-          await gh.request('POST', `/repos/${repo}/pulls/${prNumber}/requested_reviewers`,
-            { reviewers }).catch((err) => console.warn(`review request: ${err.message}`));
+          const requested = await gh.request('POST', `/repos/${repo}/pulls/${prNumber}/requested_reviewers`,
+            { reviewers }).then(() => true, (err) => { console.warn(`review request: ${err.message}`); return false; });
+          if (!requested) {
+            // Roll back whichever latch this effect earned, so the next event retries it
+            // (codex review round 2 finding on #1) — mirrors the notify rollback above.
+            // handoff.done/readyReviewRequested are set by mutually exclusive states
+            // (ai:needs-human vs ai:ready), so only one is ever true here.
+            if (next.state === 'ai:needs-human') next.handoff = { ...next.handoff, done: false };
+            else next.readyReviewRequested = false;
+          }
         }
       }
     }

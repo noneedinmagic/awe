@@ -1399,6 +1399,23 @@ test('needs-human: a failed/disabled Telegram send retries only the notify, not 
   assert.equal(next.handoff.done, true);
 });
 
+test('needs-human: a failed request-human-review retries only the request, not the notify (codex review round 2 finding on #1)', () => {
+  // Mirror of the Telegram case above: orchestrate.js's rollback for a failed
+  // requested_reviewers call resets only `done`, leaving an already-delivered
+  // `notified: true` untouched. The replay block must not re-fire notify just because
+  // `done` is false — that used to be an else-if chain assuming done/notified only ever
+  // diverge the other way (Telegram-failed), so this combination re-sent the ping.
+  const stuck = {
+    ...reduce({ ...base, prev: null }).next,
+    state: 'ai:needs-human',
+    handoff: { done: false, notified: true, reason: 'ci-failing' },
+  };
+  const { next, effects } = reduce({ ...base, prev: stuck, codexResult: null });
+  assert.deepEqual(types(effects), ['request-human-review'], 'must not re-send an already-delivered ping');
+  assert.equal(next.handoff.done, true);
+  assert.equal(next.handoff.notified, true);
+});
+
 // --- Thread authority: contested/awaitingHuman handoffs, and the classifier's
 // unanswered-threads relaxation at adjudicate/reviewer (docs/adr/0005) ---
 

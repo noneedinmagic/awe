@@ -32,19 +32,24 @@ function listFilenames(files) {
 /**
  * Convert a gitignore-style glob to a RegExp.
  * Supports `**` (any depth), `*` (within a segment), `?`. A pattern without `/`
- * matches at any depth (like gitignore), e.g. `docker-compose*.yml`.
+ * matches at any depth (like gitignore), e.g. `docker-compose*.yml`. A leading `/`
+ * anchors to the repo root (gitignore semantics) rather than matching a literal slash —
+ * the PR-files API returns filenames repo-relative, with no leading slash, so matching
+ * it literally could never match anything (codex review round 2 finding on #1).
  */
 export function globToRegExp(glob) {
+  const rooted = glob.startsWith('/');
+  const pattern = rooted ? glob.slice(1) : glob;
   let src = '';
   let i = 0;
-  while (i < glob.length) {
-    if (glob.startsWith('**/', i)) { src += '(?:.*/)?'; i += 3; }
-    else if (glob.startsWith('**', i)) { src += '.*'; i += 2; }
-    else if (glob[i] === '*') { src += '[^/]*'; i += 1; }
-    else if (glob[i] === '?') { src += '[^/]'; i += 1; }
-    else { src += glob[i].replace(/[.+^${}()|[\]\\]/g, '\\$&'); i += 1; }
+  while (i < pattern.length) {
+    if (pattern.startsWith('**/', i)) { src += '(?:.*/)?'; i += 3; }
+    else if (pattern.startsWith('**', i)) { src += '.*'; i += 2; }
+    else if (pattern[i] === '*') { src += '[^/]*'; i += 1; }
+    else if (pattern[i] === '?') { src += '[^/]'; i += 1; }
+    else { src += pattern[i].replace(/[.+^${}()|[\]\\]/g, '\\$&'); i += 1; }
   }
-  return new RegExp(glob.includes('/') ? `^${src}$` : `^(?:.*/)?${src}$`);
+  return new RegExp(rooted || pattern.includes('/') ? `^${src}$` : `^(?:.*/)?${src}$`);
 }
 
 export function matchesAny(path, patterns) {
@@ -116,15 +121,31 @@ export function classifyRisk(files, policy) {
   // Lowering only applies when EVERY changed file is in scope — otherwise a single
   // matching file (e.g. a docs override) would underreport risk for the rest of a
   // mixed PR that independently earned a higher level.
+  let overrideReasonChars = 0;
+  let overrideReasonsOmitted = 0;
   for (const override of policy.risk.overrides) {
     const matched = files.filter((f) => matchesFile(f, override.paths));
     if (!matched.length) continue;
     const lowersRisk = ORDER[override.risk] < ORDER[level];
     if (lowersRisk && matched.length !== files.length) continue;
+    // Level always applies, regardless of whether the reason text below fits the
+    // budget — the comment-size cap must never change the actual risk classification.
     level = override.risk;
-    reasons.push(`override → ${override.risk} (${override.paths.join(', ')})`);
+    // A policy with many overrides (or long path lists) used to append every one of
+    // these lines unbounded — unlike the human-readable "Risk reasons" section,
+    // reasons feeds the JSON state marker, which renderComment's degrade cascade never
+    // drops, so this alone could blow GitHub's comment cap and fail the orchestrator
+    // outright (codex review round 2 finding on #1). Cap the combined text the same
+    // way listFilenames already caps a single reason's file list.
+    const line = `override → ${override.risk} (${override.paths.join(', ')})`;
+    if (overrideReasonChars + line.length > MAX_REASON_CHARS) { overrideReasonsOmitted += 1; continue; }
+    reasons.push(line);
+    overrideReasonChars += line.length;
     // Deliberately no cause code: an override is a manual policy adjustment to the
     // level, not a reason a human should look — the causes above already cover why.
+  }
+  if (overrideReasonsOmitted) {
+    reasons.push(`override → ${overrideReasonsOmitted} more matching override reason(s) omitted (state marker budget)`);
   }
   if (humanRequired && ORDER[level] < ORDER.high) level = 'high';
 
