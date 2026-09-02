@@ -1,0 +1,13 @@
+{
+  "action": "opened",
+  "pull_request": {
+    "number": 12,
+    "draft": false,
+    "state": "open",
+    "user": { "login": "your-claude-agent[bot]" },
+    "head": { "sha": "aaaa000011112222333344445555666677778888", "ref": "tali/feature-x", "repo": { "full_name": "example-org/example-repo" } },
+    "base": { "ref": "master", "repo": { "full_name": "example-org/example-repo" } },
+    "labels": []
+  },
+  "sender": { "login": "your-claude-agent[bot]" }
+}

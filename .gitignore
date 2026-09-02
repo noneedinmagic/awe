@@ -1,0 +1,6 @@
+# node_modules is deliberately committed (vendored js-yaml) so the reusable
+# workflow needs no `npm ci` at run time — see docs/architecture.md.
+.worktrees/
+*.log
+.claude/
+.vscode/

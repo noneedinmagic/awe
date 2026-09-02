@@ -1,0 +1,99 @@
+# AI orchestration policy — copy to <consumer-repo>/.github/ai-policy.yml
+# Schema: schemas/ai-policy.schema.json in noneedinmagic/awe.
+# The orchestrator always reads this file from the BASE branch of a PR, so a PR
+# can never change the policy it is judged by. Any PR touching .github/** is
+# human-required regardless of what this file says — a review is requested and
+# risk is flagged high, but (by design) that no longer
+# keeps the AI Policy Gate itself red on a clean, green-CI PR. Nothing merges
+# automatically either way — merge.auto_merge stays false below.
+version: 1
+
+# dry-run: classify + narrate in a sticky comment, take no actions (recommended start)
+# active: full orchestration    disabled: ignore this repo
+mode: dry-run
+
+max_rounds: 2              # automatic Codex→Claude fix rounds before human handoff
+ci_failure_threshold: 2    # consecutive red CI cycles before human handoff
+echo_frequency: 100        # timeline items between automatic status echoes; 0 or null disables (see docs/ai-command.md)
+
+# PR authors whose PRs are automatically managed (exact GitHub logins — typically the
+# GitHub Apps your agents author PRs as; replace the placeholders).
+authors:
+  - "your-claude-agent[bot]"
+  - "your-codex-agent[bot]"
+
+# Humans who can be asked for decisions, get review requests, and may opt any PR
+# into management by adding the manual_optin label.
+humans:
+  - your-github-login
+
+manual_optin:
+  label: "ai:managed"
+
+reviewers:
+  # Ordered reviewer identities. With the local-agent backend the reviewer is
+  # chosen cross-vendor per PR: first actor whose vendor differs from the PR
+  # author's vendor; unknown/human authors get the first entry.
+  actors: ["your-codex-agent[bot]", "your-claude-agent[bot]"]
+  # Vendor families for that rule (defaults shown; extend if identities change).
+  vendors:
+    claude: ["your-claude-agent[bot]", "claude[bot]"]
+    codex: ["your-codex-agent[bot]", "chatgpt-codex-connector[bot]"]
+  # Legacy single-actor form, used only when `actors` is absent.
+  codex_actor: "chatgpt-codex-connector[bot]"
+  # local-agent only: the sweep is stateless (diff-only per run), so without these it
+  # re-files the same finding as a new thread every tick, even after a human resolved
+  # it. dedup_resolved_threads (deterministic gate) and inject_review_history (soft
+  # prompt hint) both default true; disable per-repo if you'd rather opt out.
+  dedup_resolved_threads: true
+  inject_review_history: true
+  dedup_proximity_lines: 5   # line-number tolerance when matching a finding to a prior thread
+  # Who may resolve a review thread: fixer (default, today's behavior) | adjudicate
+  # (fixer still resolves; the sweep re-adjudicates threads it pushed back on instead of
+  # blindly re-raising) | reviewer (fixer never resolves; only the sweep does, always
+  # after re-verifying). Requires backends.reviewer to include local-agent when not
+  # fixer. See docs/policy-reference.md.
+  thread_authority: fixer
+
+# Ordered adapter lists per role; the first entry is the pilot backend, later
+# entries are future fallbacks (e.g. rate-limit failover).
+# reviewer: `local-agent` = the maintainer's host-side sweep generates reviews with a
+# local agent CLI (see docs/rollout.md); `codex` = cloud Codex via @mention —
+# note cloud Codex ignores bot-posted mentions, so `codex` only works where a
+# human posts the mention or auto-reviews suffice.
+backends:
+  reviewer: [local-agent]
+  fixer: [claude-code-action]
+
+risk:
+  # Template defaults — tune per repository. Matched gitignore-style.
+  human_required_paths:
+    - migrations/**
+    - infrastructure/**
+    - terraform/**
+    - src/auth/**
+    - src/payments/**
+    - docker-compose*.yml
+    - "**/*.sql"
+  max_files_changed: 25
+  max_lines_added: 600
+  max_lines_deleted: 400
+  dependency_changes: human   # human | low | medium | high
+  overrides: []               # e.g. [{ paths: ["docs/**"], risk: low }]
+
+# CI check names (exact) or /regex/ patterns that must be green. Empty list means
+# "every non-orchestrator check run on the head SHA". If this repo has CI, list it
+# here explicitly — that also guards the window before CI has started.
+required_checks: []
+
+# Optional display names for labels (state → label). Lets you add emoji/colors
+# without affecting execution, e.g. "ai:fixing": "🔧 ai:fixing".
+label_names: {}
+
+merge:
+  auto_merge: false   # keep false until the Phase 4 milestone
+  method: merge   # fast-forward or an ordinary merge commit; never squash/rebase
+
+notifications:
+  telegram:
+    enabled: false

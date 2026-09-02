@@ -1,0 +1,14 @@
+{
+  "action": "submitted",
+  "review": {
+    "id": 900,
+    "state": "commented",
+    "commit_id": "aaaa000011112222333344445555666677778888",
+    "user": { "login": "chatgpt-codex-connector[bot]" }
+  },
+  "pull_request": {
+    "number": 12,
+    "head": { "sha": "aaaa000011112222333344445555666677778888", "ref": "tali/feature-x" }
+  },
+  "sender": { "login": "chatgpt-codex-connector[bot]" }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "awe",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A.W.E. — Agentic Workflows Engine: reusable GitHub Actions PR orchestrator for agent-authored pull requests",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "js-yaml": "5.3.0"
+  }
+}

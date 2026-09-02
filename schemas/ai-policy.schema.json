@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/noneedinmagic/awe/schemas/ai-policy.schema.json",
+  "title": "AI orchestration policy (.github/ai-policy.yml)",
+  "description": "Deterministic per-repository policy for the A.W.E. PR orchestrator. Runtime validation lives in scripts/lib/policy.js; this schema documents the contract and powers editor support.",
+  "type": "object",
+  "required": ["version", "authors", "humans"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "enum": ["dry-run", "active", "disabled"], "default": "dry-run" },
+    "max_rounds": { "type": "integer", "minimum": 0, "default": 2 },
+    "ci_failure_threshold": { "type": "integer", "minimum": 1, "default": 2 },
+    "echo_frequency": {
+      "type": ["integer", "null"], "minimum": 0, "default": 100,
+      "description": "Timeline items between automatic status echoes at the bottom of the thread; 0 or null disables the automatic trigger (/ai status always echoes regardless)"
+    },
+    "authors": {
+      "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1,
+      "description": "Exact GitHub logins whose PRs are automatically managed"
+    },
+    "humans": {
+      "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1,
+      "description": "Humans who receive review requests and may opt PRs in"
+    },
+    "manual_optin": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "label": { "type": "string", "default": "ai:managed" } }
+    },
+    "reviewers": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "codex_actor": { "type": "string", "default": "chatgpt-codex-connector[bot]" },
+        "actors": {
+          "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1,
+          "description": "Ordered reviewer identities; cross-vendor selection picks the first whose vendor differs from the PR author's"
+        },
+        "vendors": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "claude": { "type": "array", "items": { "type": "string" } },
+            "codex": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "dedup_resolved_threads": {
+          "type": "boolean", "default": true,
+          "description": "Local-agent sweep: suppress a fresh finding that matches this actor's own prior thread at (roughly) the same spot; reopen (with a reply) an agent-only-resolved thread whose finding is re-detected. Only a thread whose resolver (GitHub's own resolvedBy) is a configured human is trusted and never auto-reopened — a human merely commenting earlier in the thread does not exempt it."
+        },
+        "inject_review_history": {
+          "type": "boolean", "default": true,
+          "description": "Local-agent sweep: include this actor's own prior thread history in the reviewer prompt as a soft 'do not re-raise' hint, alongside the deterministic dedup_resolved_threads gate."
+        },
+        "dedup_proximity_lines": {
+          "type": "integer", "minimum": 0, "default": 5,
+          "description": "Line-number tolerance for matching a fresh finding to an own prior thread on the same file (dedup_resolved_threads)."
+        },
+        "thread_authority": {
+          "enum": ["fixer", "adjudicate", "reviewer"], "default": "fixer",
+          "description": "Who may resolve a review thread. 'fixer': today's behavior. 'adjudicate': the fixer still resolves, but the local-agent sweep re-adjudicates (withdraw/sustain/ask) any thread it pushed back on, instead of blindly re-raising. 'reviewer': the fixer never resolves; only the sweep resolves, always after re-verifying. Requires backends.reviewer to include local-agent when not 'fixer'. See docs/adr/0005-reviewer-owns-thread-lifecycle.md."
+        }
+      }
+    },
+    "backends": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "reviewer": { "type": "array", "items": { "enum": ["codex", "local-agent"] }, "minItems": 1 },
+        "fixer": { "type": "array", "items": { "enum": ["claude-code-action", "local-worker"] }, "minItems": 1 }
+      }
+    },
+    "risk": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "human_required_paths": { "type": "array", "items": { "type": "string" } },
+        "max_files_changed": { "type": "integer", "minimum": 0, "default": 25 },
+        "max_lines_added": { "type": "integer", "minimum": 0, "default": 600 },
+        "max_lines_deleted": { "type": "integer", "minimum": 0, "default": 400 },
+        "dependency_changes": { "enum": ["human", "low", "medium", "high"], "default": "human" },
+        "overrides": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["paths", "risk"], "additionalProperties": false,
+            "properties": {
+              "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+              "risk": { "enum": ["low", "medium", "high"] }
+            }
+          }
+        }
+      }
+    },
+    "required_checks": {
+      "type": "array", "items": { "type": "string" },
+      "description": "Exact check names or /regex/ patterns; empty = all non-orchestrator checks"
+    },
+    "label_names": {
+      "type": "object", "additionalProperties": { "type": "string", "minLength": 1 },
+      "description": "Optional state → display-label mapping (emoji-friendly); each value must be a non-empty, usable GitHub label name"
+    },
+    "merge": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "auto_merge": { "type": "boolean", "default": false },
+        "method": { "enum": ["merge", "squash", "rebase"], "default": "merge" }
+      }
+    },
+    "notifications": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "telegram": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean", "default": false } }
+        }
+      }
+    },
+    "prepr": {
+      "type": "object", "additionalProperties": false,
+      "description": "Pre-PR refinement loop (LAW2 `refine`), consumed by the maintainer's private companion tooling, never by the PR-time orchestrator above.",
+      "properties": {
+        "max_rounds": { "type": "integer", "minimum": 0, "default": 3 },
+        "reviewers": {
+          "type": "array", "items": { "enum": ["claude", "codex"] }, "minItems": 1,
+          "description": "Roster ordered strongest first; first entry is the default reviewer"
+        },
+        "gates": {
+          "type": "array",
+          "description": "Empty/absent = auto-detect from package.json scripts (lint/test/build)",
+          "items": {
+            "type": "object", "required": ["name", "cmd"], "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "cmd": { "type": "string", "minLength": 1 },
+              "timeout_s": { "type": "integer", "minimum": 1, "default": 300 }
+            }
+          }
+        },
+        "notify": {
+          "type": "boolean", "default": false,
+          "description": "Telegram ping on a terminal round reaching cap-reached or converged-with-a-dispute. Separate from notifications.telegram.enabled (the GitHub-side PR-time gate) — refine never touches GitHub."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "Mirrors scripts/lib/policy.js's runtime check: the codex_actor fallback for reviewers.actors is always a cloud-Codex identity, which a local-agent sweep never runs as — a local-agent policy must configure reviewers.actors explicitly.",
+      "if": {
+        "properties": {
+          "backends": {
+            "required": ["reviewer"],
+            "properties": { "reviewer": { "contains": { "const": "local-agent" } } }
+          }
+        },
+        "required": ["backends"]
+      },
+      "then": {
+        "properties": { "reviewers": { "required": ["actors"] } },
+        "required": ["reviewers"]
+      }
+    }
+  ]
+}

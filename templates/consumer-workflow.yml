@@ -1,0 +1,93 @@
+# Thin caller — copy to <consumer-repo>/.github/workflows/ai-orchestrator.yml
+# Everything else (state machine, policy evaluation, Claude fix job) runs from the
+# central noneedinmagic/awe repo at the pinned ref below.
+name: AI PR Orchestration
+
+on:
+  pull_request:
+    # unlabeled: so removing the manual opt-in label is observed immediately (the
+    # orchestrator otherwise stays silent until some other event happens to fire).
+    # edited: fires on base-branch retarget — without it, a stacked PR whose base
+    # merges (GitHub retargets it to the default branch) sits unnoticed until some
+    # other event; with it, the PR enters the machine the moment its base flips.
+    # converted_to_draft: without it, a PR pulled back to draft never re-enters the
+    # machine — the runtime draft guard (isEligible, scripts/lib/policy.js) that would
+    # neutralize a stale ai:ready/ai:fixing gate only runs when SOME event fires, and no
+    # other listed type covers this one (codex review round 2 finding on #1).
+    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize, labeled, unlabeled, edited]
+  pull_request_review:
+    types: [submitted, dismissed]
+  # Human control surface: /ai retry|fix|status|refresh comments (listed humans only) and
+  # human REQUEST_CHANGES reviews both drive the machine — see docs/human-controls.md.
+  issue_comment:
+    types: [created]
+  # CI-completion edge. Actions CI arrives via workflow_run — list this repo's actual
+  # CI workflow name(s) below. (There used to also be a check_suite:completed trigger
+  # here for external, non-Actions CI apps; dropped for cost — see
+  # docs/state-machine.md's idempotency note. Add it back explicitly if this repo's
+  # required checks ever come from a non-Actions app.)
+  workflow_run:
+    workflows: [CI] # ← replace with this repo's actual CI workflow name(s)
+    types: [completed]
+
+jobs:
+  orchestrate:
+    # Job-level `if:` — evaluated by GitHub's control plane with NO runner booted, unlike
+    # the equivalent in-job guards inside scripts/orchestrate.js (main(), L517-527 for the
+    # /ai-command case). This is a cost PREFILTER only: it must never skip an event the
+    # reducer would actually act on, only ones already proven to no-op today (#129).
+    #   - issue_comment: the reducer already ignores anything that isn't a `/ai ...`
+    #     command (parseAiCommand) or isn't from a listed human — `contains()` (not
+    #     startsWith) because parseAiCommand trims the body first, so a leading blank
+    #     line still counts; the bot check here is coarser (any bot, not just unlisted
+    #     ones) since the job-level `if:` has no access to policy.humans.
+    #   - pull_request from dependabot[bot]: only ever eligible via `policy.authors`
+    #     (never true for dependabot in this fleet) or a human-applied `ai:managed`
+    #     label — which arrives as its own `labeled` event with the HUMAN as actor, so
+    #     it is never caught by this clause.
+    #   - pull_request `edited` with no base-branch retarget: isEligible/policy only
+    #     care about `edited` for the base-ref change (see the `on:` comment above);
+    #     a bare title/body edit already re-derives the identical state today.
+    if: >-
+      (github.event_name != 'issue_comment' ||
+        (contains(github.event.comment.body, '/ai') &&
+         !endsWith(github.event.comment.user.login, '[bot]'))) &&
+      (github.event_name != 'pull_request' || github.actor != 'dependabot[bot]') &&
+      (github.event_name != 'pull_request' || github.event.action != 'edited' ||
+        github.event.changes.base)
+    # Pin `live` — the only supported ref. It moves automatically to the latest green
+    # `main` (see docs/rollout.md, "Why `live`"), so this always tracks the
+    # current release with no manual retagging. Do NOT pin a SHA or a point version: the
+    # reusable workflow's own internal `actions/orchestrate@live` refs are literals that
+    # always resolve from the moving `live` tag regardless of what you pin here, so any
+    # other pin risks an old workflow paired with a newer action (or vice versa).
+    uses: noneedinmagic/awe/.github/workflows/orchestrator.yml@live
+    with:
+      # Opt-in polarity, deliberately: this repo (whichever one copied this template)
+      # very likely has no self-hosted runner yet. Unset or anything but "local" resolves
+      # to ubuntu-latest — so this block is safe to merge before a runner exists. Once
+      # you deploy one for this repo:
+      #   gh variable set CI_RUNNER_MODE --body local
+      # "self-hosted" alone matches any runner registered to THIS repo — per-repo
+      # registration already scopes it, no need for a more specific label.
+      runs-on: ${{ vars.CI_RUNNER_MODE == 'local' && 'self-hosted' || 'ubuntu-latest' }}
+      # Optional: fix-runs-on overrides runs-on for the claude-fix job only, for
+      # setups that split runners by instance (a fast one here, a heavier one for
+      # claude-fix's real test-suite runs). Omit entirely (as here) if this repo has
+      # one runner shared by both jobs.
+      # fix-runs-on: ${{ vars.CI_RUNNER_MODE == 'local' && 'self-hosted-fix' || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: write
+      actions: read
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AI_ORCH_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_ORCH_TELEGRAM_BOT_TOKEN }}
+      AI_ORCH_TELEGRAM_CHAT_ID: ${{ secrets.AI_ORCH_TELEGRAM_CHAT_ID }}
+    # No entry needed here to override max_rounds: set an AI_ORCH_MAX_ROUNDS
+    # repository Variable (Settings → Actions → Variables — plain, no PR needed,
+    # unlike editing ai-policy.yml). Unlike secrets, repo Variables resolve
+    # automatically inside the called reusable workflow. See docs/policy-reference.md.

@@ -1,0 +1,71 @@
+# AI orchestration policy for this repo's own PRs (see .github/workflows/ai-orchestrator.yml
+# for why the external tag pin keeps self-hosting safe).
+version: 1
+
+# `ai:ready` is the AI axis only (clean review + green CI) — risk, including .github/**
+# (BUILTIN_HUMAN_PATHS), does not prevent it. A workflow/action-touching PR with a clean
+# review and green CI reaches `ai:ready` and a green Checks tab; the elevated risk
+# (protected path) still surfaces via the `risk:high` label and the Telegram ping's 👤
+# glyph, it just doesn't block the gate. Merging still requires a human either way —
+# `merge.auto_merge` stays `false` below.
+mode: active
+
+max_rounds: 2
+ci_failure_threshold: 2
+
+authors:
+  - "normandy-tali[bot]"
+  - "normandy-garrus[bot]"
+
+humans:
+  - noneedinmagic
+
+manual_optin:
+  label: "ai:managed"
+
+reviewers:
+  actors: ["normandy-garrus[bot]", "normandy-tali[bot]"]
+  vendors:
+    claude: ["normandy-tali[bot]", "claude[bot]"]
+    codex: ["normandy-garrus[bot]", "chatgpt-codex-connector[bot]"]
+  dedup_resolved_threads: true
+  inject_review_history: true
+  dedup_proximity_lines: 5
+  thread_authority: reviewer
+
+backends:
+  reviewer: [local-agent]
+  fixer: [claude-code-action]
+
+risk:
+  # None of `risk:`'s causes — this list, .github/** (BUILTIN_HUMAN_PATHS), the size
+  # thresholds, or dependency_changes below — gate `ai:ready`. They classify risk for
+  # labels/Telegram only; see the `mode: active` comment above.
+  human_required_paths:
+    - "schemas/**"
+    - "templates/**"
+  max_files_changed: 25
+  max_lines_added: 600
+  max_lines_deleted: 400
+  dependency_changes: human
+  overrides: []
+
+# "Tests" is matched as a prefix (via /regex/, since matchPattern() otherwise requires
+# exact string equality) rather than a literal, so a node-version matrix ("Tests (node
+# 24)") matches: a PR is judged by the BASE branch's copy of this file (loadPolicy),
+# never its own.
+required_checks:
+  - "/^Tests($| )/"
+  - "actionlint"
+
+label_names: {}
+
+merge:
+  auto_merge: false
+  method: merge   # fast-forward or an ordinary merge commit; never squash/rebase
+
+notifications:
+  telegram:
+    # Add AI_ORCH_TELEGRAM_BOT_TOKEN / AI_ORCH_TELEGRAM_CHAT_ID as repo secrets to
+    # actually receive pings (safe no-op until both are set — see docs/human-controls.md).
+    enabled: true

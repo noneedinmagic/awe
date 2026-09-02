@@ -1,0 +1,9 @@
+{
+  "action": "completed",
+  "check_suite": {
+    "head_sha": "aaaa000011112222333344445555666677778888",
+    "conclusion": "success",
+    "pull_requests": [{ "number": 12 }]
+  },
+  "sender": { "login": "github-actions[bot]" }
+}

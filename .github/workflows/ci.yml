@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        node-version: [24] # engines floor stays >=20 (package.json); CI just covers the current LTS
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # fetch-depth: 2 (not the default 1) only so the warning steps below can diff
+          # HEAD^1..HEAD on pull_request events; costs nothing on push. HEAD is the PR
+          # merge commit, HEAD^1 the base tip — true only while GitHub can build that merge
+          # commit. A PR with real conflicts has no merge commit, so actions/checkout falls
+          # back to the head branch tip and HEAD^1 becomes the branch's own previous commit:
+          # the diff silently narrows to "last commit only" rather than the whole PR.
+          # Acceptable false-negative risk for warning-only steps; resolve conflicts to
+          # get a reliable check.
+          fetch-depth: 2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+      # node_modules/ is committed (see docs/architecture.md), so a clean `npm ci` here
+      # (which installs strictly from package-lock.json, ignoring what's already on
+      # disk) followed by a status check catches any drift between package-lock.json
+      # and the committed tree — including a transitive version bump that stays within
+      # its parent's package.json range, and a file `npm ci` restores as untracked
+      # because it was missing from the committed tree — neither of which `npm ls`
+      # alone validates against the lockfile. `git diff` alone would miss the
+      # untracked-restore case, so this uses `git status --porcelain` instead.
+      - run: npm ci
+      - run: |
+          status=$(git status --porcelain -- node_modules package-lock.json)
+          if [ -n "$status" ]; then
+            echo "::error::node_modules/ or package-lock.json is out of sync — run \`npm ci\` and commit the result."
+            echo "$status"
+            exit 1
+          fi
+      - run: npm test
+      # Folded in as a step, not its own job — every job is billed a full rounded-up
+      # minute regardless of runtime; this one takes seconds. Left OUT of `actionlint`'s
+      # required-check contract below: `required_checks: ["actionlint"]` in ai-policy.yml
+      # matches by exact check-run name, and check runs are named after the *job*, not the
+      # step — folding this into `actionlint` instead would silently rename the check and
+      # strand every open PR's `ci` at `pending` forever (policy loads from the base
+      # branch, so the same PR can't self-unblock).
+      - name: Warn when a PR forces consumer migration
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only HEAD^1 HEAD -- \
+            templates/consumer-workflow.yml \
+            templates/labels.json \
+            schemas/ai-policy.schema.json)
+          if [ -n "$changed" ]; then
+            files=$(echo "$changed" | tr '\n' ' ')
+            echo "::warning::Consumer contract touched ($files) — every consumer may need migration. Prefer expand/contract: tolerate both, migrate, then drop."
+          fi
+      - name: Warn when a PR touches the host-sweeper/cloud-orchestrator contract
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          # These modules are shared with the private companion repo's host-side sweepers,
+          # which pin this repo at a submodule SHA and bump it deliberately, while `live`
+          # moves the cloud side the moment main goes green. The sweepers write review-body
+          # markers (defined in inspect-review.js) that the cloud side parses back out, so a
+          # breaking change here is live on one side before the other side's next pin bump.
+          # The list is static here because the other half of the import graph is not
+          # visible from this repo; the companion derives the same set from its imports.
+          changed=$(git diff --name-only HEAD^1 HEAD -- \
+            scripts/lib/github.js scripts/lib/handoff.js scripts/lib/inspect-review.js \
+            scripts/lib/policy.js scripts/lib/review-threads.js scripts/lib/state.js \
+            scripts/lib/telegram.js)
+          if [ -n "$changed" ]; then
+            files=$(echo "$changed" | tr '\n' ' ')
+            echo "::warning::Host-sweeper/cloud-orchestrator contract touched ($files) — the companion pins a SHA; keep markers and parsers backward-compatible until it bumps."
+          fi
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh # GH-hosted ubuntu-latest ships shellcheck preinstalled
+
+  retag:
+    name: Move live to green main
+    needs: [test, actionlint]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # rev-list --count needs full history
+      - run: scripts/retag-live.sh "$GITHUB_SHA"
