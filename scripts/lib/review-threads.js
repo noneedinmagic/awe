@@ -110,7 +110,7 @@ export async function fetchReviewThreads(gh, repo, prNumber) {
     isResolved: t.isResolved,
     // Maintainer resolutions made via GitHub's "Resolve conversation" button with no
     // comment still need to count as human-adjudicated (see isHumanAdjudicated in
-    // review-sweep.js) — the comments list alone can't tell that apart from an
+    // the companion sweep) — the comments list alone can't tell that apart from an
     // agent-only "Done" resolve.
     resolvedBy: normalizeActorLogin(t.resolvedBy) ?? null,
     path: t.path,
@@ -156,7 +156,7 @@ export function matchOwnThread(finding, ownThreads, proximity) {
  * Reopen a resolved thread. GitHub's REST API has no endpoint for this — only GraphQL's
  * `unresolveReviewThread` mutation does. Used when an agent-only-resolved thread's
  * finding is re-detected: `isResolved` was an unverified "Done" claim, and re-detection
- * is the signal that the fix didn't hold (see classifyFindings in review-sweep.js).
+ * is the signal that the fix didn't hold (see classifyFindings in the companion sweep).
  */
 export async function unresolveReviewThread(gh, threadId) {
   await gh.graphql(
