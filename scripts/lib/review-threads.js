@@ -1,5 +1,5 @@
-// Shared GraphQL review-thread helpers. Lives here (not in scripts/local/review-sweep.js)
-// so scripts/orchestrate.js can reuse it without importing review-sweep.js, which pulls in
+// Shared GraphQL review-thread helpers. Lives here (not in the companion's review sweep)
+// so scripts/orchestrate.js can reuse it without importing that sweep, which pulls in
 // isEligible from orchestrate.js itself — a circular import.
 
 import { reviewerRoleAgents } from './policy.js';
@@ -62,7 +62,7 @@ export function unansweredThreads(threads, policy) {
 // `reviewers.actors`/`humans`, inspect-review.js's comparisons. Confirmed live:
 // chatgpt-codex-connector/normandy-tali/normandy-garrus all come back as
 // `{ login: "normandy-garrus", __typename: "Bot" }` — no suffix. Every comparison
-// against a GraphQL-sourced login in this file and review-sweep.js (ownThreadsOf,
+// against a GraphQL-sourced login in this file and the companion's review sweep (ownThreadsOf,
 // classifyFindings's isHumanAdjudicated, qualifyUnresolvedThreads' reviewerActors voice)
 // checks against a REST-style "name[bot]" policy-configured login, so without this an
 // actor's own threads never match its own login — silently turning the dedup gate (and
