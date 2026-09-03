@@ -45,6 +45,7 @@ for (const [name, yaml] of [
   ['unknown override key', 'version: 1\nauthors: [a]\nhumans: [h]\nrisk: {overrides: [{paths: [x], risk: low, extra: 1}]}'],
   ['non-boolean telegram enabled', 'version: 1\nauthors: [a]\nhumans: [h]\nnotifications: {telegram: {enabled: "false"}}'],
   ['empty label_names value', 'version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": ""}'],
+  ['whitespace-only label_names value', 'version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": " "}'],
   ['non-string label_names value', 'version: 1\nauthors: [a]\nhumans: [h]\nlabel_names: {"ai:fixing": 5}'],
   // codex review round 4 finding on #1: an uncompilable /regex/ required_checks entry
   // otherwise parses through and only throws later, deep inside computeCiStatus, on
