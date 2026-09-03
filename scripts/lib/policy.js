@@ -270,7 +270,7 @@ export function parsePolicy(yamlText) {
   // AFTER the sticky comment already recorded that state, stranding the PR with no
   // fixer ever dispatched (round 3 finding on #1). Reject at parse time instead.
   for (const [key, value] of Object.entries(labelNames)) {
-    if (typeof value !== 'string' || !value) fail(`\`label_names.${key}\` must be a non-empty string`);
+    if (typeof value !== 'string' || !value.trim()) fail(`\`label_names.${key}\` must be a non-empty string`);
   }
 
   const prepr = {
