@@ -141,7 +141,7 @@
   },
   "allOf": [
     {
-      "description": "Mirrors scripts/lib/policy.js's runtime check: the codex_actor fallback for reviewers.actors is always a cloud-Codex identity, which a local-agent sweep never runs as — a local-agent policy must configure reviewers.actors explicitly.",
+      "description": "Mirrors scripts/lib/policy.js's runtime check: the codex_actor fallback for reviewers.actors is always a cloud-Codex identity, which a local-agent sweep never runs as — a local-agent policy must configure reviewers.actors and reviewers.vendors explicitly (#290: reviewers.vendors has no fleet-specific default to fall back to).",
       "if": {
         "properties": {
           "backends": {
@@ -152,7 +152,7 @@
         "required": ["backends"]
       },
       "then": {
-        "properties": { "reviewers": { "required": ["actors"] } },
+        "properties": { "reviewers": { "required": ["actors", "vendors"] } },
         "required": ["reviewers"]
       }
     }

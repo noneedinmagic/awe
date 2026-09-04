@@ -9,6 +9,7 @@ import {
   resolveEvent, computeCiStatus, managedLabelNames, desiredLabels, findSticky,
   parseAiCommand, looksLikeAiCommand, safeHandoffThreads, classifierThreads, shouldEcho,
   threadResolutionRule, DISPUTE_REASON_LABELS, CI_LABELS, notifyCrash, main, run,
+  computeAllowedBots,
 } from '../scripts/orchestrate.js';
 import { parsePolicy, isEligible } from '../scripts/lib/policy.js';
 import { newState, parseStateComment, renderComment, renderEcho } from '../scripts/lib/state.js';
@@ -414,6 +415,25 @@ test('resolveEvent extracts PR number and head SHA per event type', () => {
 
   const run = resolveEvent('workflow_run', fixture('workflow_run.completed.json'));
   assert.deepEqual(run, { prNumber: 12, eventHeadSha: 'aaaa000011112222333344445555666677778888' });
+});
+
+test('computeAllowedBots: derives claude-fix\'s allowed_bots from policy, [bot] suffix stripped, no fleet identity hardcoded (#290)', () => {
+  const acmePolicy = parsePolicy(
+    'version: 1\nauthors: [a]\nhumans: [h]\nbackends: {reviewer: [local-agent]}\n'
+    + 'reviewers: {actors: ["acme-reviewer[bot]"], vendors: {claude: [], codex: ["acme-reviewer[bot]"]}}\n',
+  );
+  assert.equal(computeAllowedBots(acmePolicy), 'acme-reviewer,github-actions');
+
+  const fleetPolicy = parsePolicy(
+    'version: 1\nauthors: [a]\nhumans: [h]\nbackends: {reviewer: [local-agent]}\n'
+    + 'reviewers:\n  actors: ["normandy-garrus[bot]", "normandy-tali[bot]"]\n'
+    + '  vendors:\n    claude: ["normandy-tali[bot]", "claude[bot]"]\n'
+    + '    codex: ["normandy-garrus[bot]", "chatgpt-codex-connector[bot]"]\n',
+  );
+  assert.deepEqual(
+    computeAllowedBots(fleetPolicy).split(',').sort(),
+    ['normandy-garrus', 'normandy-tali', 'claude', 'chatgpt-codex-connector', 'github-actions'].sort(),
+  );
 });
 
 test('parseAiCommand recognizes retry/fix/round-cap/status/help and rejects everything else', () => {

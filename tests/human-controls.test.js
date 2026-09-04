@@ -15,7 +15,7 @@ mode: active
 authors: ["normandy-tali[bot]"]
 humans: [oleh]
 backends: { reviewer: [local-agent], fixer: [claude-code-action] }
-reviewers: { actors: ["normandy-garrus[bot]", "normandy-tali[bot]"] }
+reviewers: { actors: ["normandy-garrus[bot]", "normandy-tali[bot]"], vendors: { claude: ["normandy-tali[bot]", "claude[bot]"], codex: ["normandy-garrus[bot]", "chatgpt-codex-connector[bot]"] } }
 `);
 const lowRisk = { level: 'low', humanRequired: false, reasons: [] };
 const pr = { number: 5, headSha: 'sha1' };
@@ -463,7 +463,7 @@ mode: dry-run
 authors: ["normandy-tali[bot]"]
 humans: [oleh]
 backends: { reviewer: [local-agent], fixer: [claude-code-action] }
-reviewers: { actors: ["normandy-garrus[bot]", "normandy-tali[bot]"] }
+reviewers: { actors: ["normandy-garrus[bot]", "normandy-tali[bot]"], vendors: { claude: ["normandy-tali[bot]", "claude[bot]"], codex: ["normandy-garrus[bot]", "chatgpt-codex-connector[bot]"] } }
 `);
   const dryBase = { ...base, policy: dryPolicy };
   const start = reduce({ ...dryBase, prev: null }).next;

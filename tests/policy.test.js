@@ -57,6 +57,24 @@ for (const [name, yaml] of [
   });
 }
 
+test('reviewers.vendors: required for local-agent, no fleet-specific default leaks (#290)', () => {
+  assert.throws(
+    () => parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\nbackends: {reviewer: [local-agent]}\nreviewers: {actors: [x]}\n'),
+    PolicyError,
+    'local-agent without reviewers.vendors must fail loudly',
+  );
+  const withVendors = parsePolicy(
+    'version: 1\nauthors: [a]\nhumans: [h]\nbackends: {reviewer: [local-agent]}\n'
+    + 'reviewers: {actors: [x], vendors: {claude: [x], codex: [y]}}\n',
+  );
+  assert.deepEqual(withVendors.reviewerVendors, { claude: ['x'], codex: ['y'] });
+});
+
+test('reviewers.vendors: cloud-only default when unset, no fleet identity (#290)', () => {
+  const p = parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\n');
+  assert.deepEqual(p.reviewerVendors, { claude: ['claude[bot]'], codex: ['chatgpt-codex-connector[bot]'] });
+});
+
 test('required_checks: a valid slash-delimited regex entry parses through unchanged', () => {
   const p = parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\nrequired_checks: ["/^build/", "lint"]\n');
   assert.deepEqual(p.requiredChecks, ['/^build/', 'lint']);

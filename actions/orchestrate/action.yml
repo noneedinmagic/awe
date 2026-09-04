@@ -29,6 +29,13 @@ outputs:
       {{THREAD_RESOLUTION_RULE}} placeholder — see
       docs/adr/0005-reviewer-owns-thread-lifecycle.md.
     value: ${{ steps.run.outputs.thread_resolution_rule }}
+  allowed_bots:
+    description: >-
+      Comma-separated bot logins ([bot] suffix stripped) derived from
+      reviewers.actors/reviewers.vendors, plus github-actions — #290. Feeds
+      claude-fix's claude-code-action step directly; no fleet identity is
+      hardcoded in this engine.
+    value: ${{ steps.run.outputs.allowed_bots }}
   prompt:
     description: rendered Claude fix prompt (render-prompt mode only)
     value: ${{ steps.run.outputs.prompt }}

@@ -35,7 +35,9 @@ reviewers:
   # chosen cross-vendor per PR: first actor whose vendor differs from the PR
   # author's vendor; unknown/human authors get the first entry.
   actors: ["your-codex-agent[bot]", "your-claude-agent[bot]"]
-  # Vendor families for that rule (defaults shown; extend if identities change).
+  # Vendor families for that rule. Required when backends.reviewer includes
+  # local-agent (as below) — no fleet-specific default exists to fall back to (#290).
+  # Also feeds claude-fix's allowed_bots input automatically.
   vendors:
     claude: ["your-claude-agent[bot]", "claude[bot]"]
     codex: ["your-codex-agent[bot]", "chatgpt-codex-connector[bot]"]
