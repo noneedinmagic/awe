@@ -29,6 +29,14 @@ const FIXER_BACKENDS = ['claude-code-action', 'local-worker'];
 // cap with the reviewer having nothing new to say.
 const THREAD_AUTHORITIES = ['fixer', 'adjudicate', 'reviewer'];
 
+// #290: no fleet identity is hardcoded here — a consumer with its own reviewer bots
+// gets this cloud-only map unless it configures `reviewers.vendors` itself, which
+// `local-agent` policies are required to do below.
+const CLOUD_ONLY_VENDORS = {
+  claude: ['claude[bot]'],
+  codex: ['chatgpt-codex-connector[bot]'],
+};
+
 const DEFAULTS = {
   mode: 'dry-run',
   max_rounds: 2,
@@ -37,10 +45,6 @@ const DEFAULTS = {
   manual_optin: { label: 'ai:managed' },
   reviewers: {
     codex_actor: 'chatgpt-codex-connector[bot]',
-    vendors: {
-      claude: ['normandy-tali[bot]', 'claude[bot]'],
-      codex: ['normandy-garrus[bot]', 'chatgpt-codex-connector[bot]'],
-    },
     // The local sweep is stateless (diff-only per run) and used to re-file the same
     // finding as a new thread on every head, even after a human resolved it (observed
     // live: the same finding four times on one file). Both default on: the gate is the guarantee, the prompt
@@ -196,13 +200,23 @@ export function parsePolicy(yamlText) {
   const reviewerActors = raw.reviewers?.actors
     ? requireStringArray(raw.reviewers.actors, 'reviewers.actors', { nonEmpty: true })
     : [codexActor];
+  // #290: `reviewers.vendors` has no fleet-specific default — a `local-agent` backend
+  // must configure its own reviewer identities explicitly (every consumer's policy
+  // already does; verified across the fleet 2026-09-02) rather than silently
+  // inheriting some other repo's bots. Checked against the raw, not-yet-validated
+  // `backends.reviewer` since the full `backends` object isn't built until below.
+  const rawBackendsReviewer = raw.backends?.reviewer ?? DEFAULTS.backends.reviewer;
+  const usesLocalAgentReviewer = Array.isArray(rawBackendsReviewer) && rawBackendsReviewer.includes('local-agent');
+  if (usesLocalAgentReviewer && !raw.reviewers?.vendors) {
+    fail('`reviewers.vendors` is required when `backends.reviewer` includes `local-agent`');
+  }
   const vendors = {
     claude: raw.reviewers?.vendors?.claude
       ? requireStringArray(raw.reviewers.vendors.claude, 'reviewers.vendors.claude')
-      : DEFAULTS.reviewers.vendors.claude,
+      : CLOUD_ONLY_VENDORS.claude,
     codex: raw.reviewers?.vendors?.codex
       ? requireStringArray(raw.reviewers.vendors.codex, 'reviewers.vendors.codex')
-      : DEFAULTS.reviewers.vendors.codex,
+      : CLOUD_ONLY_VENDORS.codex,
   };
 
   const dedupResolvedThreads = bool(raw.reviewers?.dedup_resolved_threads, 'reviewers.dedup_resolved_threads', DEFAULTS.reviewers.dedup_resolved_threads);

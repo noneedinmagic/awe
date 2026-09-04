@@ -495,6 +495,25 @@ export async function findSticky(gh, repo, prNumber) {
   return { commentId, state, echoes };
 }
 
+/**
+ * Derive claude-fix's `allowed_bots` input from policy (#290) — no fleet identity is
+ * hardcoded in the engine; a consumer with its own reviewer bots gets a matching
+ * allow-list automatically. Without this, claude-code-action refuses to run when
+ * `github.actor` isn't in `allowed_bots` (it exits 0 with no `execution_file` set,
+ * classified `fixer-skipped`), which is silent and easy to miss on first setup.
+ * `github-actions` covers the workflow's own bot-authored re-evaluation events;
+ * humans need no entry since claude-code-action never restricts human actors.
+ */
+export function computeAllowedBots(policy) {
+  const stripBotSuffix = (login) => login.replace(/\[bot\]$/, '');
+  return [...new Set([
+    ...policy.reviewerActors.map(stripBotSuffix),
+    ...policy.reviewerVendors.claude.map(stripBotSuffix),
+    ...policy.reviewerVendors.codex.map(stripBotSuffix),
+    'github-actions',
+  ])].join(',');
+}
+
 function setOutput(env, name, value) {
   if (!env.GITHUB_OUTPUT) return;
   // Heredoc form: safe for multiline values (e.g. a human /ai fix instruction).
@@ -978,6 +997,7 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   const reviewBodyFallback = codexResult?.source === 'human' ? codexResult.body : '';
   setOutput(env, 'fix_instruction', dispatchEffect?.instruction || reviewBodyFallback || '');
   setOutput(env, 'thread_resolution_rule', threadResolutionRule(policy));
+  setOutput(env, 'allowed_bots', computeAllowedBots(policy));
 
   const dryRunNote = active ? null
     : `Would apply labels \`${desiredLabels(next, policy).join('`, `')}\`` +

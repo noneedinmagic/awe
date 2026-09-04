@@ -70,6 +70,7 @@ jobs:
       head_sha: ${{ steps.orchestrate.outputs.head_sha }}
       fix_instruction: ${{ steps.orchestrate.outputs.fix_instruction }}
       thread_resolution_rule: ${{ steps.orchestrate.outputs.thread_resolution_rule }}
+      allowed_bots: ${{ steps.orchestrate.outputs.allowed_bots }}
     steps:
       - name: Orchestrate
         id: orchestrate
@@ -166,8 +167,9 @@ jobs:
           # In this loop the triggering actor is always a bot: the local-agent
           # reviewers (whose review events dispatch fix rounds) or github-actions
           # (re-evaluation events). Actor-gating is done by our policy layer
-          # (should_fix), so enumerate the known bots rather than '*'.
-          allowed_bots: "normandy-garrus,normandy-tali,github-actions"
+          # (should_fix), so enumerate the known bots rather than '*'. Derived from
+          # the caller's own policy (#290) — no fleet identity hardcoded here.
+          allowed_bots: ${{ needs.orchestrate.outputs.allowed_bots }}
           prompt: ${{ steps.prompt.outputs.prompt }}
           # `fixer-failed` handoffs have been the dominant "stuck" cause (is_error:true,
           # ~2s, zero turns, $0 cost — the SDK errors before any real work), and the
