@@ -159,7 +159,7 @@ jobs:
         # practice (the empty-output case is additionally covered by that job's own
         # `|| 'failed'` fallback on this output).
         timeout-minutes: 20
-        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         env:
           GH_TOKEN: ${{ github.token }}
         with:
