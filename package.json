@@ -11,6 +11,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "js-yaml": "5.4.1"
+    "js-yaml": "5.4.2"
   }
 }
