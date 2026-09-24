@@ -4,6 +4,13 @@ export class PolicyError extends Error {}
 
 export const POLICY_PATH = '.github/ai-policy.yml';
 
+// The sticky state comment is only ever posted by the orchestrator itself, authenticated
+// with GITHUB_TOKEN — never trust a same-marker comment from any other commenter, or a
+// forged JSON blob (e.g. a fake `ai:ready` for the current SHA) could drive the gate.
+// Single source of truth so orchestrate.js and the companion's host-side sweeps (which
+// import this file directly, not orchestrate.js) can't drift.
+export const ORCHESTRATOR_COMMENTER = 'github-actions[bot]';
+
 // Invariants enforced in code, not configurable: an agent must never be able to
 // change orchestration/workflow/policy files and benefit from it in the same PR.
 export const BUILTIN_HUMAN_PATHS = ['.github/**'];

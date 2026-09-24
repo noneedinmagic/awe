@@ -3,6 +3,7 @@ import { makeClient } from './lib/github.js';
 import {
   parsePolicy, PolicyError, POLICY_PATH, recognizedReviewActors, localReviewActors,
   reviewerRoleAgents, applyMaxRoundsOverride, echoEnabled, isEligible, resolveOptinApplier,
+  ORCHESTRATOR_COMMENTER,
 } from './lib/policy.js';
 import {
   classifyRisk, RISK_CAUSES, unmatchedGlobs, hasUngatedCi,
@@ -29,10 +30,9 @@ import { buildTelegramMessage, sendTelegram as defaultSendTelegram } from './lib
 const OWN_CHECK_MARKERS = ['AI Orchestrator', 'AI Claude Fix', 'Report Fix Result'];
 const isOwnCheck = (name) => name === GATE_NAME || OWN_CHECK_MARKERS.some((m) => name === m || name.endsWith(` / ${m}`));
 
-// The sticky state comment is only ever posted by the orchestrator itself, authenticated
-// with GITHUB_TOKEN — never trust a same-marker comment from any other commenter, or a
-// forged JSON blob (e.g. a fake `ai:ready` for the current SHA) could drive the gate.
-const ORCHESTRATOR_COMMENTER = 'github-actions[bot]';
+// ORCHESTRATOR_COMMENTER itself now lives in ./lib/policy.js — single source of truth so
+// this file and the companion's host-side sweeps (which import policy.js directly, not
+// this file) can't drift.
 
 /** Resolve the PR number and the event's head SHA (for staleness checks). */
 export function resolveEvent(eventName, payload) {
