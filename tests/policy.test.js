@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parsePolicy, PolicyError, applyMaxRoundsOverride, echoEnabled } from '../scripts/lib/policy.js';
+import {
+  parsePolicy, PolicyError, applyMaxRoundsOverride, echoEnabled, isEligible, resolveOptinApplier,
+} from '../scripts/lib/policy.js';
 
 const template = readFileSync(new URL('../templates/ai-policy.yml', import.meta.url), 'utf8');
 
@@ -163,4 +165,25 @@ test('applyMaxRoundsOverride: a malformed non-empty override throws rather than 
   for (const bad of ['abc', '-1', '2.5', ' 2', '2 ', 'NaN', '99999999999999999999999999']) {
     assert.throws(() => applyMaxRoundsOverride(p, bad), PolicyError, `expected throw for ${JSON.stringify(bad)}`);
   }
+});
+
+test('isEligible: manual opt-in requires both the label and a listed-human applier (awe#7)', () => {
+  const p = parsePolicy('version: 1\nauthors: [a]\nhumans: [h]\nmanual_optin: { label: "ai:managed" }\n');
+  const pr = { author: 'stranger', draft: false, isFork: false, labels: ['ai:managed'] };
+  assert.ok(!isEligible(pr, p), 'label present, applier not resolved at all — fail closed');
+  assert.ok(!isEligible({ ...pr, optinApplier: 'other-stranger' }, p), 'applier resolved but not in policy.humans');
+  assert.ok(isEligible({ ...pr, optinApplier: 'h' }, p), 'applier is a listed human');
+  assert.ok(!isEligible({ ...pr, labels: [] }, p), 'no label at all, regardless of optinApplier');
+});
+
+test('resolveOptinApplier: latest matching labeled event wins; no event resolves to null', async () => {
+  const events = [
+    { event: 'labeled', label: { name: 'ai:managed' }, actor: { login: 'first' }, id: 1 },
+    { event: 'unlabeled', label: { name: 'ai:managed' }, actor: { login: 'first' }, id: 2 },
+    { event: 'labeled', label: { name: 'ai:managed' }, actor: { login: 'second' }, id: 3 },
+    { event: 'labeled', label: { name: 'some-other-label' }, actor: { login: 'third' }, id: 4 },
+  ];
+  const gh = { paginate: async () => events };
+  assert.deepEqual(await resolveOptinApplier(gh, 'o/r', 12, 'ai:managed'), { login: 'second', eventId: 3 });
+  assert.equal(await resolveOptinApplier({ paginate: async () => [] }, 'o/r', 12, 'ai:managed'), null);
 });
