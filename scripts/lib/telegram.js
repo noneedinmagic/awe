@@ -107,18 +107,52 @@ function titleLine(prTitle) {
   return `<b>Title:</b> <code>${esc(prTitle)}</code>`;
 }
 
+// Any open (unclosed) HTML tags in `str`, innermost-last — e.g. "<b>x<code>y" -> ['b', 'code'].
+// Telegram's HTML parse mode only ever sees the small, non-overlapping tag set this repo
+// emits (b, code, a, blockquote), so a plain stack is enough; no need to handle malformed
+// nesting from untrusted input (card/reason text is HTML-escaped by esc() before this point).
+function unclosedTags(str) {
+  const stack = [];
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/g;
+  let m;
+  while ((m = tagRe.exec(str))) {
+    const [, closing, name] = m;
+    const lower = name.toLowerCase();
+    if (closing) {
+      const idx = stack.lastIndexOf(lower);
+      if (idx !== -1) stack.splice(idx, 1);
+    } else {
+      stack.push(lower);
+    }
+  }
+  return stack;
+}
+
 // Last-resort safety net for text that still exceeds Telegram's sendMessage limit after
 // any kind-specific trimming (or for kinds with no trimming of their own, e.g. an
 // unbounded list of risk reasons) — better to truncate than let Telegram reject the send.
 export function capToTelegramLimit(text) {
   if (text.length <= TELEGRAM_MAX_CHARS) return text;
-  let sliced = text.slice(0, TELEGRAM_MAX_CHARS - 1);
-  // esc() only ever emits &amp;/&lt;/&gt;, so a trailing "&" not yet followed by ";" is
-  // always a hard cut through one of those — back up to before it, or Telegram's HTML
-  // parser rejects the whole message over one dangling entity.
-  const danglingEntity = sliced.match(/&[a-zA-Z0-9#]*$/);
-  if (danglingEntity) sliced = sliced.slice(0, danglingEntity.index);
-  return `${sliced}…`;
+  let cut = TELEGRAM_MAX_CHARS - 1;
+  for (;;) {
+    let sliced = text.slice(0, cut);
+    // esc() only ever emits &amp;/&lt;/&gt;, so a trailing "&" not yet followed by ";" is
+    // always a hard cut through one of those — back up to before it, or Telegram's HTML
+    // parser rejects the whole message over one dangling entity.
+    const danglingEntity = sliced.match(/&[a-zA-Z0-9#]*$/);
+    if (danglingEntity) sliced = sliced.slice(0, danglingEntity.index);
+    // A hard slice can also land mid-tag (e.g. "...<blockqu") — strip the partial start,
+    // it's neither valid text nor a valid tag.
+    const partialTag = sliced.match(/<[^>]*$/);
+    if (partialTag) sliced = sliced.slice(0, partialTag.index);
+    // The slice can also land *inside* a still-open tag pair (e.g. a card's `<blockquote>`
+    // cut before its `</blockquote>`) — Telegram rejects the whole message over one
+    // unclosed tag, so close anything left open at the cut point.
+    const closers = unclosedTags(sliced).reverse().map((name) => `</${name}>`).join('');
+    const result = `${sliced}…${closers}`;
+    if (result.length <= TELEGRAM_MAX_CHARS) return result;
+    cut -= result.length - TELEGRAM_MAX_CHARS;
+  }
 }
 
 /**
@@ -429,11 +463,13 @@ export function buildTelegramMessage({
   // Telegram without opening GitHub first. `card` already contains its own "🧑‍⚖️ For the
   // human..." header line — esc() preserves its `\n` line breaks (HTML parse mode renders
   // literal newlines fine) without collapsing them the way a oneLine()-style helper would.
+  // <blockquote> sets each card off visually so several disagreements in one message don't
+  // run together.
   if (cards?.length) {
     lines.push('', `<b>Open disagreement${cards.length === 1 ? '' : 's'} (${cards.length}):</b>`);
     for (const c of cards.slice(0, CARD_LIST_CAP)) {
       const loc = c.line != null ? `${esc(c.path)}:${c.line}` : esc(c.path ?? '(unknown path)');
-      lines.push('', `<code>${loc}</code>`, esc(capFreeText(c.card)));
+      lines.push('', `<code>${loc}</code>`, `<blockquote>${esc(capFreeText(c.card))}</blockquote>`);
     }
     if (cards.length > CARD_LIST_CAP) lines.push('', `…and ${cards.length - CARD_LIST_CAP} more — see the PR's threads`);
   }
