@@ -191,6 +191,37 @@ test('main: a failed thread-confirmation GraphQL call blocks the ai:ready promot
   assert.notEqual(state.state, 'ai:ready', 'a failed thread fetch must not be treated as "confirmed no open threads"');
 });
 
+test('main: a listed human\'s push out of ai:needs-human still confirms no open thread before promoting to ai:ready (#14 round 4)', async () => {
+  // Prior head differs from the pushed head, and the PR was latched at ai:needs-human
+  // for a reason unrelated to codex.result (round-limit) — a listed human's push resets
+  // that latch (state.js's head-change block) and, combined with the fresh clean
+  // review + green CI this exact event's fixture already provides, reaches the same-call
+  // ai:ready promotion check. `approachingReady` must still fire here even though the
+  // PRE-reduce sticky state is `ai:needs-human`, not `ai:queued`/`ai:reviewing`.
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, 'bbbb000011112222333344445555666677778888', 'active');
+  stuck.state = 'ai:needs-human';
+  stuck.handoff = { done: true, notified: true, reason: 'round-limit' };
+  const { calls, env, gh } = mainFixture();
+  env.GITHUB_EVENT_PATH = new URL('./fixtures/pull_request.synchronize.json', import.meta.url).pathname;
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    return basePaginate(path);
+  };
+  gh.graphql = async () => { throw new Error('GraphQL: 502 Bad Gateway'); };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  assert.ok(patch, 'the stuck sticky comment is patched');
+  const state = parseStateComment(patch.body.body);
+  assert.notEqual(state.state, 'ai:ready', 'a human push landing a clean review + green CI must still confirm no open thread, not promote on the strength of a stale pre-push state');
+  assert.equal(state.head_sha, sha);
+});
+
 test('main: an opt-in label applied by someone not in policy.humans is ignored, with a once-only comment explaining why (#295-equivalent, awe#7)', async () => {
   const { calls, env, gh } = mainFixture();
   const postedComments = [];

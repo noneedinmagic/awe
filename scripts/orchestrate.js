@@ -880,8 +880,20 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   // promote to ai:ready — fetch threads now so its promotion guard can see whether one is
   // still open, rather than defaulting to "unknown" and promoting anyway.
   const wouldBeClean = codexResult ? !codexResult.blocking : sticky.state?.codex?.result === 'clean';
-  const approachingReady = ci === 'success' && wouldBeClean
-    && ['ai:queued', 'ai:reviewing'].includes(sticky.state?.state ?? 'ai:queued');
+  // `sticky.state.state` is the PRE-reduce state, but reduce()'s own head-change block
+  // (state.js) resets state to `ai:queued` on any push except one that lands on a
+  // human-latched `ai:needs-human` (i.e. `ai:needs-human` surviving a NON-human push) —
+  // so a push that also carries a fresh clean review and green CI can reach the same-call
+  // `ai:ready` promotion straight out of `ai:needs-human` (a delayed/requeued run finding
+  // the review and CI already settled by the time it executes). Checking only the stale
+  // pre-push state would miss fetching threads for exactly that case (P1 finding on #14
+  // round 4) — `headChanging` mirrors the reducer's own latch condition so this fetch
+  // fires whenever reduce() is actually about to reach the promotion check.
+  const priorState = sticky.state?.state ?? 'ai:queued';
+  const headChanging = sticky.state?.head_sha != null && sticky.state.head_sha !== pr.headSha;
+  const reachesPromotionGate = ['ai:queued', 'ai:reviewing'].includes(priorState)
+    || (headChanging && !(priorState === 'ai:needs-human' && !pushedByHuman));
+  const approachingReady = ci === 'success' && wouldBeClean && reachesPromotionGate;
   // Only fetched on the paths that need it: classifying whether a no-push fix round was
   // a real dispute (see reduce()'s fixResult handling), answering an `/ai refresh`
   // reconciliation, or (approachingReady) confirming no thread blocks the promotion this
