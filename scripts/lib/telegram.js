@@ -181,12 +181,14 @@ export function buildTelegramMessage({
   kind, repo, prNumber, reason, risk, codexResult, ciConclusion, runUrl, workflowName, prTitle, reminder,
   results, earlierCount, maxLines, round,
   branch, sessionId, capReached, rounds, residuals, disputes,
-  cards,
+  cards, applier, accepted, label,
+  issueNumber, prUrl: loopPrUrl,
 }) {
   const repoUrl = `https://github.com/${repo}`;
   const prUrl = prNumber != null ? `${repoUrl}/pull/${prNumber}` : null;
   const repoLink = `<a href="${esc(repoUrl)}">${esc(repo)}</a>`;
   const prLink = prUrl ? `<a href="${esc(prUrl)}">#${prNumber}</a>` : null;
+  const issueLink = issueNumber != null ? `<a href="${esc(`${repoUrl}/issues/${issueNumber}`)}">#${issueNumber}</a>` : null;
 
   // Shared by `ready`/`needs-human` only — see the `<b>Risk:</b>` block below and
   // factGlyphRow's own doc comment for the fallback rule.
@@ -201,6 +203,57 @@ export function buildTelegramMessage({
     if (risk.reasons?.length) out.push(...risk.reasons.map((r) => `- ${esc(r)}`));
     return out;
   };
+
+  // loop-* (the companion's dispatcher/babysitter): issueNumber links the *issue*, not a
+  // PR — a loop-dispatched session is joined against an issue, and only `loop-done`
+  // resolves to an actual PR (via `prUrl: loopPrUrl`, pulled straight from state.json's
+  // `children`). Companion-only callers; the engine's own orchestrator never emits these.
+  if (kind === 'loop-blocked') {
+    return {
+      text: capToTelegramLimit(`🟡 ${repoLink} ${issueLink} is blocked — needs a human: ${esc(reason ?? 'no detail recorded')}`),
+      parse_mode: 'HTML',
+    };
+  }
+  if (kind === 'loop-failed') {
+    return {
+      text: capToTelegramLimit(`🔴 ${repoLink} ${issueLink} — loop dispatch ended without a PR: ${esc(reason ?? 'no detail recorded')}. `
+        + `Tagged <code>loop:failed</code>; needs a human to investigate before re-triage.`),
+      parse_mode: 'HTML',
+    };
+  }
+  if (kind === 'loop-done') {
+    const where = loopPrUrl ? `<a href="${esc(loopPrUrl)}">a PR</a>` : 'a PR';
+    return {
+      text: capToTelegramLimit(`🟢 ${repoLink} ${issueLink} — loop dispatch opened ${where}.`),
+      parse_mode: 'HTML',
+    };
+  }
+  if (kind === 'loop-unknown') {
+    return {
+      text: capToTelegramLimit(`⚠️ ${repoLink} ${issueLink} — babysitter could not classify this dispatch's session: `
+        + `${esc(reason ?? 'no detail recorded')}. Needs human investigation; claim left in place.`),
+      parse_mode: 'HTML',
+    };
+  }
+
+  // awe#7: the ai:managed opt-in ping — paired with orchestrate.js's `resolveOptinApplier`
+  // fix, so an ignored (non-listed-human) applier gets the same visibility as an accepted
+  // one, not just the PR comment.
+  if (kind === 'opt-in') {
+    const where = prLink ? `${prLink}${prTitle ? ` (${esc(prTitle)})` : ''}` : 'a PR';
+    const text = accepted
+      ? `🏷️ @${esc(applier)} enrolled ${repoLink} ${where} into automation.`
+      : `🚫 @${esc(applier)} applied <code>${esc(label)}</code> on ${repoLink} ${where} but is not in `
+        + `<code>policy.humans</code> — ignored.`;
+    return { text: capToTelegramLimit(text), parse_mode: 'HTML' };
+  }
+  if (kind === 'dependabot-pr') {
+    return {
+      text: `🤖 ${repoLink} — new dependabot PR ${prLink}${prTitle ? ` (${esc(prTitle)})` : ''} — `
+        + `excluded from orchestration, needs a human look.`,
+      parse_mode: 'HTML',
+    };
+  }
 
   if (kind === 'blocked-run') {
     const where = prLink ? `PR ${prLink}${prTitle ? ` (${esc(prTitle)})` : ''}` : 'a run';

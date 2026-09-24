@@ -2,7 +2,7 @@ import { readFileSync, appendFileSync } from 'node:fs';
 import { makeClient } from './lib/github.js';
 import {
   parsePolicy, PolicyError, POLICY_PATH, recognizedReviewActors, localReviewActors,
-  reviewerRoleAgents, applyMaxRoundsOverride, echoEnabled, isEligible,
+  reviewerRoleAgents, applyMaxRoundsOverride, echoEnabled, isEligible, resolveOptinApplier,
 } from './lib/policy.js';
 import {
   classifyRisk, RISK_CAUSES, unmatchedGlobs, hasUngatedCi,
@@ -495,6 +495,24 @@ export async function findSticky(gh, repo, prNumber) {
   return { commentId, state, echoes };
 }
 
+// eventId ties the marker to the exact `labeled` event that produced it — a later,
+// different labeling event (unlabel-then-relabel) gets its own comment instead of being
+// silently swallowed by an old marker.
+const OPTIN_IGNORED_MARKER_PREFIX = '<!-- ai-orch:optin-ignored ';
+
+/** Best-effort, deduped-per-event notice that an opt-in label's applier isn't listed. */
+async function notifyIgnoredOptinApplier(gh, repo, prNumber, applier, eventId, label) {
+  if (eventId == null) return; // nothing stable to dedupe against — skip rather than spam
+  const marker = `${OPTIN_IGNORED_MARKER_PREFIX}${applier}:${eventId} -->`;
+  const comments = await gh.paginate(`/repos/${repo}/issues/${prNumber}/comments`);
+  if (comments.some((c) => c.user?.login === ORCHESTRATOR_COMMENTER && c.body?.includes(marker))) return;
+  const body = `\`${label}\` was applied by @${applier}, who is not in this repo's \`humans\` list — ignored. `
+    + 'A listed human can remove and re-apply the label to enroll this PR.\n\n'
+    + marker;
+  await gh.request('POST', `/repos/${repo}/issues/${prNumber}/comments`, { body })
+    .catch((err) => console.warn(`notifyIgnoredOptinApplier: comment POST failed: ${err.message}`));
+}
+
 /**
  * Derive claude-fix's `allowed_bots` input from policy (#290) — no fleet identity is
  * hardcoded in the engine; a consumer with its own reviewer bots gets a matching
@@ -662,11 +680,14 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     gh, repo, headSha: pr.headSha, prNumber, prTitle: pr.title,
   });
 
-  // Policy comes from the BASE branch, never the PR head — a PR cannot change
-  // the policy it is judged by.
-  let policy = await loadPolicy(gh, repo, pr.baseRef);
+  // Policy comes from the repo's DEFAULT branch, never the PR's base or head — a
+  // same-repo PR (or a compromised colleague) could otherwise open against a base
+  // branch whose own policy favors it, and both the repo and the policy would look
+  // legitimate to a repo-level allow-list.
+  const { default_branch: defaultBranch } = await gh.request('GET', `/repos/${repo}`);
+  let policy = await loadPolicy(gh, repo, defaultBranch);
   if (!policy) {
-    console.log('No ai-policy on the base branch — unmanaged.');
+    console.log('No ai-policy on the default branch — unmanaged.');
     return;
   }
   policy = applyMaxRoundsOverride(policy, env.AI_ORCH_MAX_ROUNDS);
@@ -683,13 +704,22 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   if (policy.mode === 'disabled' && !fixResultMode) {
     // Still emit a neutral gate: if a consumer has made the check required during
     // rollout, disabling orchestration must not leave PRs blocked by a missing check.
-    console.log('ai-policy is disabled on the base branch — emitting neutral gate only.');
+    console.log('ai-policy is disabled on the default branch — emitting neutral gate only.');
     const gate = evaluateGate({ state: 'disabled', risk: null, head_sha: pr.headSha, round: 0 }, policy);
     await postGate(gh, repo, pr.headSha, gate);
     return;
   }
   if (policy.mode === 'disabled') {
-    console.log('ai-policy is disabled on the base branch — reporting fix result to clear in-flight state only.');
+    console.log('ai-policy is disabled on the default branch — reporting fix result to clear in-flight state only.');
+  }
+  // Only resolve who applied the opt-in label (an extra issue-events call) when it could
+  // actually change the outcome: an already-allowlisted author doesn't need it, and
+  // neither does a draft/fork PR, which isEligible rejects before ever looking at labels.
+  let optinEventId = null;
+  if (!policy.authors.includes(pr.author) && !pr.draft && !pr.isFork && pr.labels.includes(policy.manualOptinLabel)) {
+    const resolved = await resolveOptinApplier(gh, repo, prNumber, policy.manualOptinLabel);
+    pr.optinApplier = resolved?.login ?? null;
+    optinEventId = resolved?.eventId ?? null;
   }
   if (!isEligible(pr, policy)) {
     console.log(`PR #${prNumber} by ${pr.author} is not managed (allowlist/opt-in/draft/fork).`);
@@ -702,6 +732,13 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
         status: 'completed', conclusion: 'neutral',
         title: 'No longer managed', summary: `PR #${prNumber} is no longer eligible (opt-in removed, draft, or fork) — the orchestrator stopped enforcing it.`,
       });
+    }
+    // The label is present but whoever applied it isn't a listed human — GitHub has no
+    // per-label permission, so anyone with triage access could otherwise self-label a PR
+    // into management. Leave the label in place (never fought over) but tell a human why
+    // it didn't take, once per applier+event so a replayed webhook doesn't repeat it.
+    if (pr.labels.includes(policy.manualOptinLabel) && pr.optinApplier && !policy.humans.includes(pr.optinApplier)) {
+      await notifyIgnoredOptinApplier(gh, repo, prNumber, pr.optinApplier, optinEventId, policy.manualOptinLabel);
     }
     return;
   }
@@ -839,15 +876,51 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
           ? `${env.GITHUB_SERVER_URL}/${repo}/pull/${prNumber}#pullrequestreview-${codexResult.id ?? codexResult.reviewId}` : null,
       }
     : null;
+  // #124: about to hand state.js a clean-verdict, green-CI event that would otherwise
+  // promote to ai:ready — fetch threads now so its promotion guard can see whether one is
+  // still open, rather than defaulting to "unknown" and promoting anyway.
+  const wouldBeClean = codexResult ? !codexResult.blocking : sticky.state?.codex?.result === 'clean';
+  // `sticky.state.state` is the PRE-reduce state, but reduce()'s own head-change block
+  // (state.js) resets state to `ai:queued` on any push except one that lands on a
+  // human-latched `ai:needs-human` (i.e. `ai:needs-human` surviving a NON-human push) —
+  // so a push that also carries a fresh clean review and green CI can reach the same-call
+  // `ai:ready` promotion straight out of `ai:needs-human` (a delayed/requeued run finding
+  // the review and CI already settled by the time it executes). Checking only the stale
+  // pre-push state would miss fetching threads for exactly that case (P1 finding on #14
+  // round 4) — `headChanging` mirrors the reducer's own latch condition so this fetch
+  // fires whenever reduce() is actually about to reach the promotion check.
+  const priorState = sticky.state?.state ?? 'ai:queued';
+  const headChanging = sticky.state?.head_sha != null && sticky.state.head_sha !== pr.headSha;
+  // reduce()'s summoned-review release block (state.js's `summonedDuringFix`-dismissed
+  // branch) resets a `summoned-review-no-thread` `ai:needs-human` straight to `ai:queued`
+  // in this SAME call, with no push involved — so a dismissal event carrying an already-
+  // recorded clean result and green CI can reach the same-call `ai:ready` promotion without
+  // `headChanging` ever being true. `summonedDuringFixDismissed` mirrors exactly the
+  // condition that release block trusts to fire, so this fetch runs whenever reduce() is
+  // actually about to reach the promotion check via that path too (P1 finding on #14 round 5).
+  const summonedReleaseReachesGate = priorState === 'ai:needs-human'
+    && sticky.state?.handoff?.reason === 'summoned-review-no-thread'
+    && summonedDuringFixDismissed;
+  const reachesPromotionGate = ['ai:queued', 'ai:reviewing'].includes(priorState)
+    || (headChanging && !(priorState === 'ai:needs-human' && !pushedByHuman))
+    || summonedReleaseReachesGate;
+  const approachingReady = ci === 'success' && wouldBeClean && reachesPromotionGate;
   // Only fetched on the paths that need it: classifying whether a no-push fix round was
-  // a real dispute (see reduce()'s fixResult handling), or answering an `/ai refresh`
-  // reconciliation (see reduce()'s `refresh` branch — it declines outright, never
-  // guessing, when this comes back null). `null` (not `[]`) on failure — classifierThreads
-  // deliberately doesn't reuse safeHandoffThreads' display-oriented fallback, since `[]`
-  // here would misclassify an unconfirmed thread state as agreement.
-  const openThreads = (fixResultMode && fixResult.outcome === 'disputed') || humanCommand?.type === 'refresh'
-    ? await classifierThreads(gh, repo, prNumber, policy, { forRefresh: humanCommand?.type === 'refresh' })
+  // a real dispute (see reduce()'s fixResult handling), answering an `/ai refresh`
+  // reconciliation, or (approachingReady) confirming no thread blocks the promotion this
+  // event is about to trigger (see reduce()'s `refresh` branch — it declines outright,
+  // never guessing, when this comes back null). `null` (not `[]`) on failure —
+  // classifierThreads deliberately doesn't reuse safeHandoffThreads' display-oriented
+  // fallback, since `[]` here would misclassify an unconfirmed thread state as agreement.
+  const openThreads = (fixResultMode && fixResult.outcome === 'disputed') || humanCommand?.type === 'refresh' || approachingReady
+    ? await classifierThreads(gh, repo, prNumber, policy,
+      { forRefresh: humanCommand?.type === 'refresh' || approachingReady })
     : null;
+  // Distinguishes "this event had no reason to fetch threads" from "we specifically
+  // needed to confirm no thread blocks the ai:ready promotion and couldn't" — both leave
+  // `openThreads` null, but only the latter should stop reduce() from promoting on an
+  // otherwise clean/green result (P1 finding on #14 round 2; see reduce()'s doc comment).
+  const threadFetchFailed = approachingReady && openThreads === null;
 
   // A dismissed Codex review is no longer "relevant" evidence (see inspectReview), so it
   // never surfaces via codexResult — flag it separately so reduce() can revoke a result
@@ -859,7 +932,7 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     event: fixResultMode ? `fix-result:${fixResult.outcome}` : eventLabel,
     codexResult, ci, fixResult, pushedByHuman, codexDismissed, humanCommand, openThreads, summonedReviewId,
     summonedReviewHasThread, summonedReviewUrl, summonedReviewHasBodyOnlyPending, summonedDuringFixDismissed,
-    summonedReviewIds,
+    summonedReviewIds, threadFetchFailed,
   });
 
   const active = policy.mode === 'active';
@@ -1007,7 +1080,7 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   // exactly that for anything thrown between here and postGate). Computed before the
   // sticky render so the warnings land where the operator reads (#277), not only in
   // the Checks-tab gate summary.
-  const policyWarnings = await policySanityWarnings(gh, repo, pr.baseRef, policy)
+  const policyWarnings = await policySanityWarnings(gh, repo, defaultBranch, policy)
     .catch((err) => { console.warn(`policy sanity check: ${err.message}`); return []; });
   for (const w of policyWarnings) console.log(`::warning::${w}`);
   const body = renderComment(next, { dryRunNote, handoffThreads, policyWarnings });

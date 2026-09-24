@@ -204,10 +204,19 @@ function toHandoff(state, reason, effects, event, active, runUrl = null) {
  *   budget (issue #112) — survives every reset in this function.
  * @param {object[]|null} [input.openThreads] qualifying unresolved review threads, fetched
  *   fresh by the caller — meaningful alongside a `disputed` fixResult (to classify a
- *   no-push round, see the fixResult handling below) and alongside an `/ai refresh`
- *   command (see below). `null` means "couldn't be confirmed" (GraphQL fetch failed),
- *   never conflated with "confirmed empty" — an unknown thread state must never read as
- *   agreement.
+ *   no-push round, see the fixResult handling below), alongside an `/ai refresh` command
+ *   (see below), and as an `ai:ready` promotion guard (#124, see the clean/ci-success
+ *   handling below) independent of `backends.reviewer`. `null` means "couldn't be
+ *   confirmed" (GraphQL fetch failed) OR "the caller didn't fetch it this call" — either
+ *   way never conflated with "confirmed empty": an unknown thread state must never read
+ *   as agreement, and the promotion guard only blocks when it's a confirmed non-empty
+ *   array or `threadFetchFailed` is explicitly set.
+ * @param {boolean} [input.threadFetchFailed] true only when the caller specifically
+ *   attempted the `ai:ready`-promotion thread fetch (orchestrate.js's `approachingReady`)
+ *   and it failed — distinguishes that real gap from the far more common "this event had
+ *   no reason to fetch threads at all" (`openThreads` is `null` either way, but only the
+ *   former should block promotion; defaults `false` so every caller that never fetches
+ *   threads keeps promoting on a clean/green result exactly as before this guard existed).
  * @param {number|null} [input.summonedReviewId] id of a human-summoned `@codex review` /
  *   `@claude review` with open findings on the current head (#58/#103) — never evidence
  *   (it never flows through `codexResult`; its silence must never promote `ai:ready`),
@@ -256,7 +265,7 @@ export function reduce({
   prev, pr, policy, risk, event, codexResult, ci, fixResult, pushedByHuman = false,
   codexDismissed = false, humanCommand = null, openThreads = null, summonedReviewId = null,
   summonedReviewHasThread = false, summonedReviewUrl = null, summonedReviewHasBodyOnlyPending = false,
-  summonedDuringFixDismissed = false, summonedReviewIds = [],
+  summonedDuringFixDismissed = false, summonedReviewIds = [], threadFetchFailed = false,
 }) {
   const effects = [];
   let s = prev ? structuredClone(prev) : newState(pr.number, pr.headSha, policy.mode);
@@ -1235,7 +1244,25 @@ export function reduce({
     // below on the strength of a stale recorded 'clean' result, or the decline it just
     // reported becomes a lie the very same call it was reported in.
     if (s.codex.result === 'clean' && s.state !== 'ai:needs-human' && !refreshDeclinedThisEvent) {
-      if (ci === 'success') {
+      // #124: a clean AI verdict is never sufficient on its own — an open adjudicated-
+      // voice thread must still block promotion, independent of which `backends.reviewer`
+      // produced the verdict. The local-agent sweep already encodes this itself (a clean
+      // scan gets converted to a blocking review via OPEN_THREAD_BLOCK_MARKER before
+      // reduce() ever sees it), but a clean codex-only review has no such conversion, so
+      // this checks the invariant directly instead of trusting every backend to encode it.
+      // `openThreads` is `null` both when the caller never fetched it (every pre-#124
+      // caller/test — most events have no reason to) and when orchestrate.js's
+      // `approachingReady` fetch was attempted and the GraphQL call failed
+      // (classifierThreads' catch) — those two collapse to the same value, and only the
+      // second one is a real gap: a transient fetch failure must not silently promote a
+      // PR with a genuinely open thread (P1 finding on #14 round 2). `threadFetchFailed`
+      // (set by orchestrate.js only when `approachingReady` itself was true) tells them
+      // apart without changing what an omitted `openThreads` means for every other
+      // caller — defaults to `false`, so the many pre-#124 call sites (dry-run, /ai
+      // retry, summoned-review release, ...) that never fetch threads at all keep
+      // promoting exactly as they did before this guard existed.
+      const threadsBlockReady = (Array.isArray(openThreads) && openThreads.length > 0) || threadFetchFailed;
+      if (ci === 'success' && !threadsBlockReady) {
         // #144/#203: `ai:ready` is the AI axis only — clean review AND green CI, full
         // stop. Risk (size, protected/configured paths, dependency manifests) used to
         // gate this too (`risk.level === 'low' && !risk.humanRequired`), collapsing "the

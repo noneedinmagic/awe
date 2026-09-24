@@ -367,12 +367,37 @@ export function vendorOf(login, vendors) {
   return null;
 }
 
-/** A PR is managed if its author is allowlisted or a human opted it in by label. */
+/**
+ * A PR is managed if its author is allowlisted, or a human in `policy.humans` opted it
+ * in by label — presence of the label alone is not enough: anyone with triage
+ * permission can apply it, so `pr.optinApplier` (the resolved applier login, or `null`
+ * when unresolved/unattributed) must also be a listed human. Callers only need to
+ * resolve `optinApplier` when the label is actually present and the author isn't
+ * already allowlisted — see `resolveOptinApplier`.
+ */
 export function isEligible(pr, policy) {
   if (pr.draft) return false;
   if (pr.isFork) return false;
   if (policy.authors.includes(pr.author)) return true;
-  return pr.labels.includes(policy.manualOptinLabel);
+  return pr.labels.includes(policy.manualOptinLabel)
+    && !!pr.optinApplier && policy.humans.includes(pr.optinApplier);
+}
+
+/**
+ * Who applied the manual opt-in label, per the issue-events history — the label's mere
+ * presence proves nothing about who put it there. Latest matching `labeled` event wins
+ * (handles unlabel-then-relabel by a different actor); a label with no matching `labeled`
+ * event at all (events pruned, or some other anomaly) resolves to `null` — unattributed,
+ * which `isEligible` treats as not eligible (fail-closed). Returns `{login, eventId}`
+ * rather than a bare login: the caller's ignored-applier comment dedupes on `eventId` so
+ * a replayed/re-run event doesn't repeat it.
+ */
+export async function resolveOptinApplier(gh, repo, prNumber, label) {
+  const events = await gh.paginate(`/repos/${repo}/issues/${prNumber}/events`);
+  const labeled = events.filter((e) => e.event === 'labeled' && e.label?.name === label);
+  if (!labeled.length) return null;
+  const latest = labeled[labeled.length - 1];
+  return { login: latest.actor?.login ?? null, eventId: latest.id };
 }
 
 /**

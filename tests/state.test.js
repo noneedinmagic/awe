@@ -244,6 +244,54 @@ test('clean review + green CI + low risk → ready', () => {
   assert.deepEqual(notifyKinds(effects), ['ready'], 'a human doing a manual merge gets pinged that the PR is mergeable');
 });
 
+// #124: a clean AI verdict is never sufficient alone — an open adjudicated-voice thread
+// (openThreads, fetched by orchestrate.js's approachingReady condition) must still block
+// promotion, independent of which backend produced the clean verdict.
+test('clean review + green CI does NOT promote to ready while a thread is still open (#124)', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: [{ id: 1 }],
+  });
+  assert.notEqual(next.state, 'ai:ready');
+  assert.deepEqual(notifyKinds(effects), [], 'no ready ping while a thread is still open');
+});
+
+test('clean review + green CI promotes to ready once openThreads is confirmed empty (#124)', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: [],
+  });
+  assert.equal(next.state, 'ai:ready');
+  assert.deepEqual(notifyKinds(effects), ['ready']);
+});
+
+test('clean review + green CI promotes to ready when openThreads is null and no fetch was ever attempted (the common case — no regression from #124)', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: null,
+  });
+  assert.equal(next.state, 'ai:ready', 'pre-#124 behavior for every event that had no reason to fetch threads at all');
+  assert.deepEqual(notifyKinds(effects), ['ready']);
+});
+
+// #14 round 2 (Garrus P1): the ai:ready-promotion thread fetch itself (orchestrate.js's
+// approachingReady) collapses to the same `openThreads: null` on a real GraphQL failure
+// as on "never fetched" — threadFetchFailed is how orchestrate.js tells reduce() which
+// one actually happened, without changing what a bare `openThreads: null` means for
+// every other caller (test above).
+test('clean review + green CI does NOT promote to ready when the ready-promotion thread fetch specifically failed (threadFetchFailed)', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: null, threadFetchFailed: true,
+  });
+  assert.notEqual(next.state, 'ai:ready', 'a failed confirmation attempt must hedge, never fall back to promoting');
+  assert.deepEqual(notifyKinds(effects), []);
+});
+
 test('ai:ready does not re-notify on replay — idempotent like every other effect', () => {
   const prev = reduce({ ...base, prev: null }).next;
   const codexResult = { blocking: false, sha: 'sha1', findings: [] };

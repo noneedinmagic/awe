@@ -493,6 +493,52 @@ test('blocked-run-expired: black-cued, notes the 30-day auto-delete, no dead run
   assert.match(msg.text, /<a href="https:\/\/github\.com\/noneedinmagic\/awe\/pull\/42">#42<\/a>/);
 });
 
+test('opt-in: accepted names the applier and links the PR; ignored names the label and policy.humans', () => {
+  const accepted = buildTelegramMessage({
+    kind: 'opt-in', repo, prNumber, accepted: true, applier: 'human', label: 'ai:managed',
+  });
+  assert.match(accepted.text, /🏷️/);
+  assert.match(accepted.text, /@human/);
+  assert.match(accepted.text, /enrolled/);
+
+  const ignored = buildTelegramMessage({
+    kind: 'opt-in', repo, prNumber, accepted: false, applier: '<intruder>', label: 'ai:managed',
+  });
+  assert.match(ignored.text, /🚫/);
+  assert.match(ignored.text, /&lt;intruder&gt;/, 'applier login is HTML-escaped');
+  assert.match(ignored.text, /policy\.humans/);
+});
+
+test('opt-in: falls back to "a PR" when no prNumber is resolvable', () => {
+  const msg = buildTelegramMessage({ kind: 'opt-in', repo, accepted: true, applier: 'human', label: 'ai:managed' });
+  assert.match(msg.text, /a PR/);
+});
+
+test('dependabot-pr: robot-cued, links the PR + title', () => {
+  const msg = buildTelegramMessage({ kind: 'dependabot-pr', repo, prNumber, prTitle: 'Bump lodash from 4.17.20 to 4.17.21' });
+  assert.match(msg.text, /🤖/);
+  assert.match(msg.text, /Bump lodash/);
+  assert.match(msg.text, /excluded from orchestration/);
+});
+
+test('loop-blocked/failed/done/unknown: render issue links and reasons (companion dispatcher/babysitter kinds)', () => {
+  const blocked = buildTelegramMessage({ kind: 'loop-blocked', repo: 'o/r', issueNumber: 5, reason: 'needs an org' });
+  assert.match(blocked.text, /blocked/);
+  assert.match(blocked.text, /#5/);
+
+  const failed = buildTelegramMessage({ kind: 'loop-failed', repo: 'o/r', issueNumber: 6, reason: 'stalled' });
+  assert.match(failed.text, /loop:failed/);
+  assert.match(failed.text, /#6/);
+
+  const done = buildTelegramMessage({ kind: 'loop-done', repo: 'o/r', issueNumber: 7, prUrl: 'https://github.com/o/r/pull/1' });
+  assert.match(done.text, /pull\/1/);
+  assert.match(done.text, /#7/);
+
+  const unknown = buildTelegramMessage({ kind: 'loop-unknown', repo: 'o/r', issueNumber: 8, reason: 'cwd join miss' });
+  assert.match(unknown.text, /could not classify/);
+  assert.match(unknown.text, /#8/);
+});
+
 const NOW_YEAR = new Date().getUTCFullYear();
 const result = (over = {}) => ({
   agent: 'codex', verdict: 'findings', url: 'https://github.com/o/r/pull/42#pullrequestreview-1',

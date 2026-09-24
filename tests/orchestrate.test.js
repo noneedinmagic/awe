@@ -37,6 +37,7 @@ function mainFixture({ failSticky = false, policyYaml = mainPolicy } = {}) {
     request: async (method, path, body) => {
       calls.push({ method, path, body });
       if (method === 'GET' && path === '/repos/o/r/pulls/12') return pr;
+      if (method === 'GET' && path === '/repos/o/r') return { default_branch: 'main' };
       if (method === 'GET' && path.startsWith('/repos/o/r/contents/.github/ai-policy.yml')) {
         return { content: Buffer.from(policyYaml).toString('base64') };
       }
@@ -48,7 +49,7 @@ function mainFixture({ failSticky = false, policyYaml = mainPolicy } = {}) {
       if (path === '/repos/o/r/pulls/12/files') return [{ filename: '.github/workflows/ci.yml', additions: 1, deletions: 0 }];
       if (path === '/repos/o/r/pulls/12/reviews') return [{ id: 8, user: { login: 'reviewer[bot]' }, commit_id: sha, state: 'APPROVED' }];
       if (path === '/repos/o/r/commits/' + sha + '/check-runs?filter=latest') return [{ name: 'test', status: 'completed', conclusion: 'success' }];
-      return [];
+      return []; // includes /repos/o/r/issues/12/events — no opt-in label in this fixture
     },
     graphql: async () => ({ repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }),
     countAll: async () => 0,
@@ -145,6 +146,166 @@ test('main: a fix-result invocation still clears the ai:fixing latch while polic
   // Disabled mode must still never leave a non-neutral gate blocking the PR.
   const gate = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/check-runs');
   assert.equal(gate.body.conclusion, 'neutral');
+});
+
+test('main: policy is read from the repo default branch, never the PR\'s own base ref (#294-equivalent, awe#7)', async () => {
+  const { calls, env, gh } = mainFixture();
+  gh.request = async (method, path, body) => {
+    if (method === 'GET' && path === '/repos/o/r') return { default_branch: 'main' };
+    if (method === 'GET' && path === '/repos/o/r/pulls/12') {
+      return {
+        title: 'Ready PR', head: { sha: 'aaaa000011112222333344445555666677778888', ref: 'feat/ready', repo: { full_name: 'o/r' } },
+        base: { ref: 'attacker-base' }, user: { login: 'author[bot]' }, draft: false, labels: [], state: 'open',
+      };
+    }
+    // Same PR opened against a base branch carrying its own, more permissive policy — a
+    // same-repo colleague (or a compromised one) controls that branch's ai-policy.yml.
+    // Reading policy from it instead of the default branch would let it self-approve.
+    if (method === 'GET' && path === '/repos/o/r/contents/.github/ai-policy.yml?ref=attacker-base') {
+      return { content: Buffer.from(mainPolicy.replace('mode: active', 'mode: disabled')).toString('base64') };
+    }
+    if (method === 'GET' && path === '/repos/o/r/contents/.github/ai-policy.yml?ref=main') {
+      return { content: Buffer.from(mainPolicy).toString('base64') };
+    }
+    calls.push({ method, path, body });
+    if (path === '/repos/o/r/issues/12/comments' && method === 'POST') return { id: 91 };
+    return null;
+  };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  // mode:active came from `main`'s policy — if the base ref's `mode: disabled` copy had
+  // won, no sticky comment (an active-mode side effect) would ever be posted.
+  const sticky = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/issues/12/comments');
+  assert.ok(sticky, 'active-mode policy (from the default branch) drove this run, not the base ref\'s disabled copy');
+});
+
+test('main: a failed thread-confirmation GraphQL call blocks the ai:ready promotion instead of silently trusting a clean/green result (#14 round 2)', async () => {
+  const { calls, env, gh } = mainFixture();
+  gh.graphql = async () => { throw new Error('GraphQL: 502 Bad Gateway'); };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  const sticky = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/issues/12/comments');
+  const state = parseStateComment(sticky.body.body);
+  assert.notEqual(state.state, 'ai:ready', 'a failed thread fetch must not be treated as "confirmed no open threads"');
+});
+
+test('main: a listed human\'s push out of ai:needs-human still confirms no open thread before promoting to ai:ready (#14 round 4)', async () => {
+  // Prior head differs from the pushed head, and the PR was latched at ai:needs-human
+  // for a reason unrelated to codex.result (round-limit) — a listed human's push resets
+  // that latch (state.js's head-change block) and, combined with the fresh clean
+  // review + green CI this exact event's fixture already provides, reaches the same-call
+  // ai:ready promotion check. `approachingReady` must still fire here even though the
+  // PRE-reduce sticky state is `ai:needs-human`, not `ai:queued`/`ai:reviewing`.
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, 'bbbb000011112222333344445555666677778888', 'active');
+  stuck.state = 'ai:needs-human';
+  stuck.handoff = { done: true, notified: true, reason: 'round-limit' };
+  const { calls, env, gh } = mainFixture();
+  env.GITHUB_EVENT_PATH = new URL('./fixtures/pull_request.synchronize.json', import.meta.url).pathname;
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    return basePaginate(path);
+  };
+  gh.graphql = async () => { throw new Error('GraphQL: 502 Bad Gateway'); };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  assert.ok(patch, 'the stuck sticky comment is patched');
+  const state = parseStateComment(patch.body.body);
+  assert.notEqual(state.state, 'ai:ready', 'a human push landing a clean review + green CI must still confirm no open thread, not promote on the strength of a stale pre-push state');
+  assert.equal(state.head_sha, sha);
+});
+
+test('main: dismissing a summoned no-thread review still confirms no open thread before promoting to ai:ready (#14 round 5)', async () => {
+  // No push involved — the head is unchanged, so `headChanging` is false and can't be
+  // what reaches the promotion gate here. The `ai:needs-human`/`summoned-review-no-thread`
+  // latch releases straight to `ai:queued` in reduce()'s summonedDuringFix-dismissed
+  // branch, then this SAME event's `codexResult` (a fresh clean review from the
+  // recognized reviewer, gathered independently of the summoned review's dismissal)
+  // reaches the codexResult-consuming block now that `s.state` reads `ai:queued` —
+  // together with the already-green CI, that combination must still confirm no thread
+  // blocks the promotion, exactly like the push-triggered case round 4 already covers.
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, sha, 'active');
+  stuck.state = 'ai:needs-human';
+  stuck.handoff = { done: true, notified: true, reason: 'summoned-review-no-thread' };
+  stuck.summonedDuringFix = 42;
+  stuck.summonedDuringFixIds = [42];
+  stuck.codex.review_floor = 42;
+  const { calls, env, gh } = mainFixture();
+  env.GITHUB_EVENT_NAME = 'pull_request_review';
+  env.GITHUB_EVENT_PATH = new URL('./fixtures/pull_request_review.dismissed.json', import.meta.url).pathname;
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    // The summoned review (42) now shows DISMISSED; a separate, later, clean review
+    // (50) from the recognized reviewer actor is what this event's codexResult resolves
+    // to — neither has anything to do with a push, both stand on the unchanged head.
+    if (path === '/repos/o/r/pulls/12/reviews') {
+      return [
+        { id: 42, user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: sha, state: 'DISMISSED' },
+        { id: 50, user: { login: 'reviewer[bot]' }, commit_id: sha, state: 'APPROVED' },
+      ];
+    }
+    return basePaginate(path);
+  };
+  gh.graphql = async () => { throw new Error('GraphQL: 502 Bad Gateway'); };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  assert.ok(patch, 'the stuck sticky comment is patched');
+  const state = parseStateComment(patch.body.body);
+  assert.notEqual(state.state, 'ai:ready', 'a no-push dismissal releasing needs-human into a clean review + green CI must still confirm no open thread');
+});
+
+test('main: an opt-in label applied by someone not in policy.humans is ignored, with a once-only comment explaining why (#295-equivalent, awe#7)', async () => {
+  const { calls, env, gh } = mainFixture();
+  const postedComments = [];
+  gh.request = async (method, path, body) => {
+    if (method === 'GET' && path === '/repos/o/r') return { default_branch: 'main' };
+    if (method === 'GET' && path === '/repos/o/r/pulls/12') {
+      return {
+        title: 'Ready PR', head: { sha: 'aaaa000011112222333344445555666677778888', ref: 'feat/ready', repo: { full_name: 'o/r' } },
+        base: { ref: 'main' }, user: { login: 'random-person' }, draft: false, labels: [{ name: 'ai:managed' }], state: 'open',
+      };
+    }
+    if (method === 'GET' && path.startsWith('/repos/o/r/contents/.github/ai-policy.yml')) {
+      return { content: Buffer.from(mainPolicy).toString('base64') };
+    }
+    if (method === 'POST' && path === '/repos/o/r/issues/12/comments') {
+      const comment = { id: 100 + postedComments.length, user: { login: 'github-actions[bot]' }, body: body.body };
+      postedComments.push(comment);
+      return comment;
+    }
+    calls.push({ method, path, body });
+    return null;
+  };
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/events') {
+      return [{ event: 'labeled', label: { name: 'ai:managed' }, actor: { login: 'triage-only-person' }, id: 777 }];
+    }
+    if (path === '/repos/o/r/issues/12/comments') return postedComments;
+    return [];
+  };
+
+  await main({ env, gh, sendTelegram: async () => true });
+  await main({ env, gh, sendTelegram: async () => true }); // replayed event — must not repeat the comment
+
+  const ignoredComments = postedComments.filter((c) => c.body.includes('triage-only-person'));
+  assert.equal(ignoredComments.length, 1, 'posted once, not repeated on a replayed event');
+  assert.match(ignoredComments[0].body, /not in this repo's `humans` list/);
+  // The PR must never have been treated as managed — no sticky state comment, no gate
+  // flip, no requested reviewers.
+  assert.equal(calls.filter((c) => c.path === '/repos/o/r/pulls/12/requested_reviewers').length, 0);
 });
 
 test('main: a fix-result invocation for a closed PR still clears the ai:fixing latch (round 4 finding on #1)', async () => {
@@ -465,14 +626,21 @@ test('the ai-command.md doc the /ai help reply reads exists and covers every sub
   for (const cmd of ['retry', 'fix', 'round-cap', 'status', 'help']) assert.match(doc, new RegExp(`\\*\\*${cmd}\\*\\*`));
 });
 
-test('eligibility: allowlisted authors in, drafts/forks/others out, label opts in', () => {
+test('eligibility: allowlisted authors in, drafts/forks/others out, label opts in only when applied by a listed human', () => {
   const pr = { author: 'your-claude-agent[bot]', draft: false, isFork: false, labels: [] };
   assert.ok(isEligible(pr, policy));
   assert.ok(isEligible({ ...pr, author: 'your-codex-agent[bot]' }, policy), 'Garrus is an equal peer');
   assert.ok(!isEligible({ ...pr, draft: true }, policy));
   assert.ok(!isEligible({ ...pr, isFork: true }, policy));
   assert.ok(!isEligible({ ...pr, author: 'random-person' }, policy));
-  assert.ok(isEligible({ ...pr, author: 'random-person', labels: ['ai:managed'] }, policy), 'manual opt-in');
+  assert.ok(!isEligible({ ...pr, author: 'random-person', labels: ['ai:managed'] }, policy),
+    'label present but applier unresolved — fail closed');
+  assert.ok(!isEligible({
+    ...pr, author: 'random-person', labels: ['ai:managed'], optinApplier: 'some-other-person',
+  }, policy), 'label applied by someone not in policy.humans is ignored');
+  assert.ok(isEligible({
+    ...pr, author: 'random-person', labels: ['ai:managed'], optinApplier: 'your-github-login',
+  }, policy), 'label applied by a listed human is a valid manual opt-in');
 });
 
 test('computeCiStatus: own checks excluded (including reusable-workflow composite names)', () => {
