@@ -77,6 +77,30 @@ test('capToTelegramLimit: backs up instead of slicing through an HTML entity (e.
   assert.equal(capped, `${'x'.repeat(4093)}…`, 'must back up before the "&" rather than keep a partial entity');
 });
 
+test('capToTelegramLimit: closes a tag left open by the cut (e.g. a card\'s <blockquote>)', () => {
+  const text = `${'x'.repeat(4000)}<blockquote>${'y'.repeat(200)}</blockquote>`;
+  const capped = capToTelegramLimit(text);
+  assert.ok(capped.length <= 4096, `capped text must never exceed Telegram's limit, got ${capped.length}`);
+  const opens = (capped.match(/<blockquote>/g) ?? []).length;
+  const closes = (capped.match(/<\/blockquote>/g) ?? []).length;
+  assert.equal(opens, closes, 'every opened <blockquote> must be closed, or Telegram rejects the whole message');
+});
+
+test('needs-human: #165/#200 follow-up — an oversized card list never leaves a dangling <blockquote>', () => {
+  // Escaped "&" characters (&amp;) inflate each card past its raw 300-char cap enough that
+  // three cards' worth of <blockquote>-wrapped text blows past the 4096 limit mid-card.
+  const cards = Array.from({ length: 3 }, (_, i) => ({
+    path: `f${i}.js`, line: i, author: null, card: '&'.repeat(300),
+  }));
+  const msg = buildTelegramMessage({
+    kind: 'needs-human', repo, prNumber, reason: 'agents-disagree', cards,
+  });
+  assert.ok(msg.text.length <= 4096, `text must never exceed Telegram's limit, got ${msg.text.length}`);
+  const opens = (msg.text.match(/<blockquote>/g) ?? []).length;
+  const closes = (msg.text.match(/<\/blockquote>/g) ?? []).length;
+  assert.equal(opens, closes, 'a truncated card list must never leave an unclosed <blockquote>');
+});
+
 test('needs-human: fixer-failed includes the failed-run link, mirroring the sticky comment', () => {
   const msg = buildTelegramMessage({ kind: 'needs-human', repo, prNumber, reason: 'fixer-failed', runUrl: 'https://github.com/o/r/actions/runs/123' });
   assert.match(msg.text, /<a href="https:\/\/github\.com\/o\/r\/actions\/runs\/123">https:\/\/github\.com\/o\/r\/actions\/runs\/123<\/a>/);
