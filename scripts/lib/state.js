@@ -1241,10 +1241,16 @@ export function reduce({
       // scan gets converted to a blocking review via OPEN_THREAD_BLOCK_MARKER before
       // reduce() ever sees it), but a clean codex-only review has no such conversion, so
       // this checks the invariant directly instead of trusting every backend to encode it.
-      // `openThreads` is `null` unless the caller fetched it (see orchestrate.js's
-      // `approachingReady` fetch condition) — no fetch means no known threads, so this
-      // falls through to the pre-existing behavior rather than guessing blocked.
-      const threadsBlockReady = Array.isArray(openThreads) && openThreads.length > 0;
+      // `openThreads` is `null` both when the caller never fetched it and when it tried
+      // and the GraphQL call failed (classifierThreads' catch) — the two collapse to the
+      // same value. But `approachingReady` (orchestrate.js) mirrors this exact condition
+      // (`ci === 'success'` plus a clean verdict) to decide whether to fetch, and every
+      // reset that can change `s.state`/`s.codex.result` earlier in this same reduce()
+      // call also nulls `s.codex.result`, so a real `null` reaching here is always the
+      // failed-fetch case, never the never-fetched one. Hedge like every other consumer
+      // of `openThreads` (`!Array.isArray` above) rather than promote on an unconfirmed
+      // thread state — P1 finding on #14 round 2.
+      const threadsBlockReady = !Array.isArray(openThreads) || openThreads.length > 0;
       if (ci === 'success' && !threadsBlockReady) {
         // #144/#203: `ai:ready` is the AI axis only — clean review AND green CI, full
         // stop. Risk (size, protected/configured paths, dependency manifests) used to

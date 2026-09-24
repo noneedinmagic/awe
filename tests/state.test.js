@@ -267,14 +267,14 @@ test('clean review + green CI promotes to ready once openThreads is confirmed em
   assert.deepEqual(notifyKinds(effects), ['ready']);
 });
 
-test('clean review + green CI promotes to ready when openThreads was never fetched (null — unknown, not "confirmed empty")', () => {
+test('clean review + green CI does NOT promote to ready when openThreads is null — unconfirmed (fetch failed), not "confirmed empty" (#14 round 2)', () => {
   const prev = reduce({ ...base, prev: null }).next;
   const codexResult = { blocking: false, sha: 'sha1', findings: [] };
   const { next, effects } = reduce({
     ...base, prev, codexResult, ci: 'success', openThreads: null,
   });
-  assert.equal(next.state, 'ai:ready', 'pre-#124 behavior when the caller never fetched threads at all');
-  assert.deepEqual(notifyKinds(effects), ['ready']);
+  assert.notEqual(next.state, 'ai:ready', 'an unconfirmed thread fetch must hedge, never suppress');
+  assert.deepEqual(notifyKinds(effects), []);
 });
 
 test('ai:ready does not re-notify on replay — idempotent like every other effect', () => {
