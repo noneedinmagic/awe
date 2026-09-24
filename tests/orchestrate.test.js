@@ -222,6 +222,51 @@ test('main: a listed human\'s push out of ai:needs-human still confirms no open 
   assert.equal(state.head_sha, sha);
 });
 
+test('main: dismissing a summoned no-thread review still confirms no open thread before promoting to ai:ready (#14 round 5)', async () => {
+  // No push involved — the head is unchanged, so `headChanging` is false and can't be
+  // what reaches the promotion gate here. The `ai:needs-human`/`summoned-review-no-thread`
+  // latch releases straight to `ai:queued` in reduce()'s summonedDuringFix-dismissed
+  // branch, then this SAME event's `codexResult` (a fresh clean review from the
+  // recognized reviewer, gathered independently of the summoned review's dismissal)
+  // reaches the codexResult-consuming block now that `s.state` reads `ai:queued` —
+  // together with the already-green CI, that combination must still confirm no thread
+  // blocks the promotion, exactly like the push-triggered case round 4 already covers.
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, sha, 'active');
+  stuck.state = 'ai:needs-human';
+  stuck.handoff = { done: true, notified: true, reason: 'summoned-review-no-thread' };
+  stuck.summonedDuringFix = 42;
+  stuck.summonedDuringFixIds = [42];
+  stuck.codex.review_floor = 42;
+  const { calls, env, gh } = mainFixture();
+  env.GITHUB_EVENT_NAME = 'pull_request_review';
+  env.GITHUB_EVENT_PATH = new URL('./fixtures/pull_request_review.dismissed.json', import.meta.url).pathname;
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    // The summoned review (42) now shows DISMISSED; a separate, later, clean review
+    // (50) from the recognized reviewer actor is what this event's codexResult resolves
+    // to — neither has anything to do with a push, both stand on the unchanged head.
+    if (path === '/repos/o/r/pulls/12/reviews') {
+      return [
+        { id: 42, user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: sha, state: 'DISMISSED' },
+        { id: 50, user: { login: 'reviewer[bot]' }, commit_id: sha, state: 'APPROVED' },
+      ];
+    }
+    return basePaginate(path);
+  };
+  gh.graphql = async () => { throw new Error('GraphQL: 502 Bad Gateway'); };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  assert.ok(patch, 'the stuck sticky comment is patched');
+  const state = parseStateComment(patch.body.body);
+  assert.notEqual(state.state, 'ai:ready', 'a no-push dismissal releasing needs-human into a clean review + green CI must still confirm no open thread');
+});
+
 test('main: an opt-in label applied by someone not in policy.humans is ignored, with a once-only comment explaining why (#295-equivalent, awe#7)', async () => {
   const { calls, env, gh } = mainFixture();
   const postedComments = [];

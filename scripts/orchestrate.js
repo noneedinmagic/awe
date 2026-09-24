@@ -891,8 +891,19 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   // fires whenever reduce() is actually about to reach the promotion check.
   const priorState = sticky.state?.state ?? 'ai:queued';
   const headChanging = sticky.state?.head_sha != null && sticky.state.head_sha !== pr.headSha;
+  // reduce()'s summoned-review release block (state.js's `summonedDuringFix`-dismissed
+  // branch) resets a `summoned-review-no-thread` `ai:needs-human` straight to `ai:queued`
+  // in this SAME call, with no push involved — so a dismissal event carrying an already-
+  // recorded clean result and green CI can reach the same-call `ai:ready` promotion without
+  // `headChanging` ever being true. `summonedDuringFixDismissed` mirrors exactly the
+  // condition that release block trusts to fire, so this fetch runs whenever reduce() is
+  // actually about to reach the promotion check via that path too (P1 finding on #14 round 5).
+  const summonedReleaseReachesGate = priorState === 'ai:needs-human'
+    && sticky.state?.handoff?.reason === 'summoned-review-no-thread'
+    && summonedDuringFixDismissed;
   const reachesPromotionGate = ['ai:queued', 'ai:reviewing'].includes(priorState)
-    || (headChanging && !(priorState === 'ai:needs-human' && !pushedByHuman));
+    || (headChanging && !(priorState === 'ai:needs-human' && !pushedByHuman))
+    || summonedReleaseReachesGate;
   const approachingReady = ci === 'success' && wouldBeClean && reachesPromotionGate;
   // Only fetched on the paths that need it: classifying whether a no-push fix round was
   // a real dispute (see reduce()'s fixResult handling), answering an `/ai refresh`
