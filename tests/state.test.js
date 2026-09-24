@@ -244,6 +244,39 @@ test('clean review + green CI + low risk → ready', () => {
   assert.deepEqual(notifyKinds(effects), ['ready'], 'a human doing a manual merge gets pinged that the PR is mergeable');
 });
 
+// #124: a clean AI verdict is never sufficient alone — an open adjudicated-voice thread
+// (openThreads, fetched by orchestrate.js's approachingReady condition) must still block
+// promotion, independent of which backend produced the clean verdict.
+test('clean review + green CI does NOT promote to ready while a thread is still open (#124)', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: [{ id: 1 }],
+  });
+  assert.notEqual(next.state, 'ai:ready');
+  assert.deepEqual(notifyKinds(effects), [], 'no ready ping while a thread is still open');
+});
+
+test('clean review + green CI promotes to ready once openThreads is confirmed empty (#124)', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: [],
+  });
+  assert.equal(next.state, 'ai:ready');
+  assert.deepEqual(notifyKinds(effects), ['ready']);
+});
+
+test('clean review + green CI promotes to ready when openThreads was never fetched (null — unknown, not "confirmed empty")', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: null,
+  });
+  assert.equal(next.state, 'ai:ready', 'pre-#124 behavior when the caller never fetched threads at all');
+  assert.deepEqual(notifyKinds(effects), ['ready']);
+});
+
 test('ai:ready does not re-notify on replay — idempotent like every other effect', () => {
   const prev = reduce({ ...base, prev: null }).next;
   const codexResult = { blocking: false, sha: 'sha1', findings: [] };

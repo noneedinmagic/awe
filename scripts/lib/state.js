@@ -1235,7 +1235,17 @@ export function reduce({
     // below on the strength of a stale recorded 'clean' result, or the decline it just
     // reported becomes a lie the very same call it was reported in.
     if (s.codex.result === 'clean' && s.state !== 'ai:needs-human' && !refreshDeclinedThisEvent) {
-      if (ci === 'success') {
+      // #124: a clean AI verdict is never sufficient on its own — an open adjudicated-
+      // voice thread must still block promotion, independent of which `backends.reviewer`
+      // produced the verdict. The local-agent sweep already encodes this itself (a clean
+      // scan gets converted to a blocking review via OPEN_THREAD_BLOCK_MARKER before
+      // reduce() ever sees it), but a clean codex-only review has no such conversion, so
+      // this checks the invariant directly instead of trusting every backend to encode it.
+      // `openThreads` is `null` unless the caller fetched it (see orchestrate.js's
+      // `approachingReady` fetch condition) — no fetch means no known threads, so this
+      // falls through to the pre-existing behavior rather than guessing blocked.
+      const threadsBlockReady = Array.isArray(openThreads) && openThreads.length > 0;
+      if (ci === 'success' && !threadsBlockReady) {
         // #144/#203: `ai:ready` is the AI axis only — clean review AND green CI, full
         // stop. Risk (size, protected/configured paths, dependency manifests) used to
         // gate this too (`risk.level === 'low' && !risk.humanRequired`), collapsing "the
