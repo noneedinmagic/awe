@@ -10,7 +10,14 @@ const lowRisk = { level: 'low', humanRequired: false, reasons: [] };
 const highRisk = { level: 'high', humanRequired: true, reasons: ['auth touched'] };
 const pr = { number: 5, headSha: 'sha1' };
 
-const base = { pr, policy, risk: lowRisk, event: 'test', codexResult: null, ci: 'pending', fixResult: null };
+// `openThreads: []` (confirmed empty), not the function's own `null` default: every
+// production caller reaching the ci:'success' ai:ready promotion check has already
+// fetched and confirmed threads (see reduce()'s own comment on this), so that's the
+// realistic default here too — tests exercising the null (unconfirmed) or open-thread
+// cases override it explicitly.
+const base = {
+  pr, policy, risk: lowRisk, event: 'test', codexResult: null, ci: 'pending', fixResult: null, openThreads: [],
+};
 const types = (effects) => effects.map((e) => e.type);
 const notifyKinds = (effects) => effects.filter((e) => e.type === 'notify').map((e) => e.kind);
 
