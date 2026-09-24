@@ -180,6 +180,17 @@ test('main: policy is read from the repo default branch, never the PR\'s own bas
   assert.ok(sticky, 'active-mode policy (from the default branch) drove this run, not the base ref\'s disabled copy');
 });
 
+test('main: a failed thread-confirmation GraphQL call blocks the ai:ready promotion instead of silently trusting a clean/green result (#14 round 2)', async () => {
+  const { calls, env, gh } = mainFixture();
+  gh.graphql = async () => { throw new Error('GraphQL: 502 Bad Gateway'); };
+
+  await main({ env, gh, sendTelegram: async () => true });
+
+  const sticky = calls.find((c) => c.method === 'POST' && c.path === '/repos/o/r/issues/12/comments');
+  const state = parseStateComment(sticky.body.body);
+  assert.notEqual(state.state, 'ai:ready', 'a failed thread fetch must not be treated as "confirmed no open threads"');
+});
+
 test('main: an opt-in label applied by someone not in policy.humans is ignored, with a once-only comment explaining why (#295-equivalent, awe#7)', async () => {
   const { calls, env, gh } = mainFixture();
   const postedComments = [];

@@ -893,6 +893,11 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     ? await classifierThreads(gh, repo, prNumber, policy,
       { forRefresh: humanCommand?.type === 'refresh' || approachingReady })
     : null;
+  // Distinguishes "this event had no reason to fetch threads" from "we specifically
+  // needed to confirm no thread blocks the ai:ready promotion and couldn't" — both leave
+  // `openThreads` null, but only the latter should stop reduce() from promoting on an
+  // otherwise clean/green result (P1 finding on #14 round 2; see reduce()'s doc comment).
+  const threadFetchFailed = approachingReady && openThreads === null;
 
   // A dismissed Codex review is no longer "relevant" evidence (see inspectReview), so it
   // never surfaces via codexResult — flag it separately so reduce() can revoke a result
@@ -904,7 +909,7 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     event: fixResultMode ? `fix-result:${fixResult.outcome}` : eventLabel,
     codexResult, ci, fixResult, pushedByHuman, codexDismissed, humanCommand, openThreads, summonedReviewId,
     summonedReviewHasThread, summonedReviewUrl, summonedReviewHasBodyOnlyPending, summonedDuringFixDismissed,
-    summonedReviewIds,
+    summonedReviewIds, threadFetchFailed,
   });
 
   const active = policy.mode === 'active';

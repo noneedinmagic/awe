@@ -267,13 +267,28 @@ test('clean review + green CI promotes to ready once openThreads is confirmed em
   assert.deepEqual(notifyKinds(effects), ['ready']);
 });
 
-test('clean review + green CI does NOT promote to ready when openThreads is null — unconfirmed (fetch failed), not "confirmed empty" (#14 round 2)', () => {
+test('clean review + green CI promotes to ready when openThreads is null and no fetch was ever attempted (the common case — no regression from #124)', () => {
   const prev = reduce({ ...base, prev: null }).next;
   const codexResult = { blocking: false, sha: 'sha1', findings: [] };
   const { next, effects } = reduce({
     ...base, prev, codexResult, ci: 'success', openThreads: null,
   });
-  assert.notEqual(next.state, 'ai:ready', 'an unconfirmed thread fetch must hedge, never suppress');
+  assert.equal(next.state, 'ai:ready', 'pre-#124 behavior for every event that had no reason to fetch threads at all');
+  assert.deepEqual(notifyKinds(effects), ['ready']);
+});
+
+// #14 round 2 (Garrus P1): the ai:ready-promotion thread fetch itself (orchestrate.js's
+// approachingReady) collapses to the same `openThreads: null` on a real GraphQL failure
+// as on "never fetched" — threadFetchFailed is how orchestrate.js tells reduce() which
+// one actually happened, without changing what a bare `openThreads: null` means for
+// every other caller (test above).
+test('clean review + green CI does NOT promote to ready when the ready-promotion thread fetch specifically failed (threadFetchFailed)', () => {
+  const prev = reduce({ ...base, prev: null }).next;
+  const codexResult = { blocking: false, sha: 'sha1', findings: [] };
+  const { next, effects } = reduce({
+    ...base, prev, codexResult, ci: 'success', openThreads: null, threadFetchFailed: true,
+  });
+  assert.notEqual(next.state, 'ai:ready', 'a failed confirmation attempt must hedge, never fall back to promoting');
   assert.deepEqual(notifyKinds(effects), []);
 });
 
