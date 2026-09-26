@@ -561,6 +561,14 @@ test('loop-blocked/failed/done/unknown: render issue links and reasons (companio
   const unknown = buildTelegramMessage({ kind: 'loop-unknown', repo: 'o/r', issueNumber: 8, reason: 'cwd join miss' });
   assert.match(unknown.text, /could not classify/);
   assert.match(unknown.text, /#8/);
+
+  const footerFailed = buildTelegramMessage({
+    kind: 'loop-footer-failed', repo: 'o/r', issueNumber: 9, prUrl: 'https://github.com/o/r/pull/2', reason: 'identity.sh exited 1',
+  });
+  assert.match(footerFailed.text, /identity footer/);
+  assert.match(footerFailed.text, /pull\/2/);
+  assert.match(footerFailed.text, /#9/);
+  assert.match(footerFailed.text, /identity\.sh exited 1/);
 });
 
 const NOW_YEAR = new Date().getUTCFullYear();

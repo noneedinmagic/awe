@@ -239,9 +239,10 @@ export function buildTelegramMessage({
   };
 
   // loop-* (the companion's dispatcher/babysitter): issueNumber links the *issue*, not a
-  // PR — a loop-dispatched session is joined against an issue, and only `loop-done`
-  // resolves to an actual PR (via `prUrl: loopPrUrl`, pulled straight from state.json's
-  // `children`). Companion-only callers; the engine's own orchestrator never emits these.
+  // PR — a loop-dispatched session is joined against an issue, and only
+  // `loop-done`/`loop-footer-failed` resolve to an actual PR (via `prUrl: loopPrUrl`,
+  // pulled straight from state.json's `children`). Companion-only callers; the engine's
+  // own orchestrator never emits these.
   if (kind === 'loop-blocked') {
     return {
       text: capToTelegramLimit(`🟡 ${repoLink} ${issueLink} is blocked — needs a human: ${esc(reason ?? 'no detail recorded')}`),
@@ -266,6 +267,18 @@ export function buildTelegramMessage({
     return {
       text: capToTelegramLimit(`⚠️ ${repoLink} ${issueLink} — babysitter could not classify this dispatch's session: `
         + `${esc(reason ?? 'no detail recorded')}. Needs human investigation; claim left in place.`),
+      parse_mode: 'HTML',
+    };
+  }
+  // agentic-workflows#419: the identity footer is applied host-side after the PR opens
+  // (agentic-workflows#400 amendment to its ADR 0014) — a failure here never blocks the PR
+  // itself, but it does mean the PR stays unattributed until a human intervenes, so it
+  // pages the same way loop-unknown does.
+  if (kind === 'loop-footer-failed') {
+    const where = loopPrUrl ? `<a href="${esc(loopPrUrl)}">its PR</a>` : 'its PR';
+    return {
+      text: capToTelegramLimit(`⚠️ ${repoLink} ${issueLink} — could not apply the identity footer to ${where}: `
+        + `${esc(reason ?? 'no detail recorded')}. Will keep retrying; PR itself is unaffected.`),
       parse_mode: 'HTML',
     };
   }
