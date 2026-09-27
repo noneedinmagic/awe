@@ -4,6 +4,17 @@ States: `ai:queued`, `ai:reviewing`, `ai:fixing`, `ai:needs-human`, `ai:ready`,
 `ai:failed` (plus implicit `unmanaged` = no state comment). Orthogonal display labels:
 `risk:low|medium|high`, `ai:round-N`.
 
+`ai:managed` (`policy.yml`'s `manual_optin.label`, default `ai:managed` — see
+`DEFAULTS.manual_optin` in `scripts/lib/policy.js`) is the opt-in label itself: applying
+it to a PR from an author not already on `policy.authors` is what satisfies transition
+1's "opted in" guard and lifts the PR out of implicit `unmanaged`. It is not one of the
+states above — no sticky comment carries it, GitHub's label list is its only record.
+
+`loop:*`/`status:*` labels (e.g. `loop:dispatched`, `status:ready` — see the companion
+host repo's `dispatch.js`/`babysitter.js`) are a separate, unrelated label namespace: a
+personal dispatch-queue tracker for picking issues up into a session, not part of this
+PR-level state machine at all.
+
 There is no `ai:waiting-rereview`: a fix push creates a new head SHA whose cycle is
 simply `ai:queued → ai:reviewing` again; the round counter persists across SHAs.
 
