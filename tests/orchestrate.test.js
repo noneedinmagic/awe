@@ -387,6 +387,70 @@ test('main: failed ready Telegram send retries only the notification latch', asy
   assert.equal(calls.filter((c) => c.path === '/repos/o/r/pulls/12/requested_reviewers').length, 1);
 });
 
+// audit 2026-09-24-18 (#428): the 'ready' rollback above has coverage; 'needs-human' and
+// 'no-op-round' (orchestrate.js's other two notify-rollback branches) didn't.
+test('main: failed needs-human Telegram send retries only the notification latch, not the already-sent review request', async () => {
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, sha, 'active');
+  stuck.state = 'ai:fixing';
+  const { calls, env, gh } = mainFixture();
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    return basePaginate(path);
+  };
+  env.PR_NUMBER = '12';
+  env.FIX_OUTCOME = 'failed';
+
+  await main({
+    env, gh, sendTelegram: async () => false, argv: ['node', 'orchestrate.js', 'fix-result'],
+  });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  const state = parseStateComment(patch.body.body);
+  assert.equal(state.state, 'ai:needs-human');
+  assert.equal(state.handoff.notified, false, 'failed send rolls back only the notify latch');
+  assert.equal(state.handoff.done, true, 'the human review request already succeeded and must not be reissued');
+  assert.equal(calls.filter((c) => c.path === '/repos/o/r/pulls/12/requested_reviewers').length, 1);
+});
+
+test('main: failed no-op-round Telegram send retries its notify latch', async () => {
+  const sha = 'aaaa000011112222333344445555666677778888';
+  const stuck = newState(12, sha, 'active');
+  stuck.state = 'ai:fixing';
+  stuck.round = 1;
+  stuck.roundOrigin = 'auto';
+  const { calls, env, gh } = mainFixture();
+  const basePaginate = gh.paginate;
+  gh.paginate = async (path) => {
+    if (path === '/repos/o/r/issues/12/comments') {
+      return [{ id: 50, user: { login: 'github-actions[bot]' }, body: renderComment(stuck) }];
+    }
+    // A local-agent-sweep-authored review carrying the open-thread-block marker: the
+    // round existed solely to get an already-resolved thread addressed (see state.js's
+    // `s.noOp` branch), which is what actually drives this PR into the no-op-round path.
+    if (path === '/repos/o/r/pulls/12/reviews') {
+      return [{
+        id: 8, user: { login: 'reviewer[bot]' }, commit_id: sha, state: 'APPROVED',
+        body: '<!-- ai-orch:open-thread-block -->',
+      }];
+    }
+    return basePaginate(path);
+  };
+  env.PR_NUMBER = '12';
+  env.FIX_OUTCOME = 'disputed';
+
+  await main({
+    env, gh, sendTelegram: async () => false, argv: ['node', 'orchestrate.js', 'fix-result'],
+  });
+
+  const patch = calls.find((c) => c.method === 'PATCH' && c.path === '/repos/o/r/issues/comments/50');
+  const state = parseStateComment(patch.body.body);
+  assert.equal(state.noOp?.notified, false, 'failed send rolls back the no-op-round notify latch for retry');
+});
+
 test('main: gate output warns on an empty required_checks beside a real CI workflow (#267)', async (t) => {
   const { calls, env, gh } = mainFixture();
   const baseRequest = gh.request;
