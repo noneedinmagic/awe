@@ -95,11 +95,13 @@ jobs:
     concurrency:
       group: ai-fix-${{ needs.orchestrate.outputs.pr_number }}
       cancel-in-progress: false
+    # No `checks: write`: nothing in this job creates check runs (the AI Policy Gate is
+    # posted by `orchestrate`/`report-fix-result`), and claude-code-action's documented
+    # permission set doesn't include it — least privilege for the job that runs the agent.
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      checks: write
       id-token: write
       actions: read
     outputs:
