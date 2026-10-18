@@ -22,7 +22,7 @@ simply `ai:queued → ai:reviewing` again; the round counter persists across SHA
 
 | # | From | Trigger | Guard | Actions | To |
 |---|---|---|---|---|---|
-| 1 | — | `pull_request` opened/reopened/ready_for_review/synchronize, or `labeled` with the opt-in label | author allowlisted or opted in; not draft; not fork; policy enabled | init/refresh state for head SHA; classify risk (policy read from **base ref**) | `ai:queued` |
+| 1 | — | `pull_request` opened/reopened/ready_for_review/synchronize, or `labeled` with the opt-in label | author allowlisted or opted in; not draft; not fork; policy enabled | init/refresh state for head SHA; classify risk (policy read from the repo's **default branch**) | `ai:queued` |
 | 2 | `ai:queued` | same run | no Codex result recorded for this head SHA | request Codex review once (`codex.requested_sha` dedupe) | `ai:reviewing` |
 | 3 | `ai:reviewing` | review submitted by `codex_actor` | `review.commit_id == head SHA` (else stale, ignored) | interpret findings | 4 or 5 |
 | 4 | `ai:reviewing` | blocking findings | `round < max_rounds` | `round++`; dispatch Claude fix job | `ai:fixing` |

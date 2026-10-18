@@ -1,6 +1,6 @@
 # AI orchestration policy — copy to <consumer-repo>/.github/ai-policy.yml
 # Schema: schemas/ai-policy.schema.json in noneedinmagic/awe.
-# The orchestrator always reads this file from the BASE branch of a PR, so a PR
+# The orchestrator always reads this file from the repo's DEFAULT branch, so a PR
 # can never change the policy it is judged by. Any PR touching .github/** is
 # human-required regardless of what this file says — a review is requested and
 # risk is flagged high, but (by design) that no longer

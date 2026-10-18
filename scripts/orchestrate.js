@@ -282,7 +282,7 @@ export function standingSummonedReviewIds(reviews, inlineComments, policy, opts)
  * That sidesteps two separate P1 findings on #119: (1) dismissing only the oldest of several
  * latched reviews must not read as releasing the whole latch, and (2)
  * `summonedReviewCandidates` classifies through `reviewerRoleAgents`/`recognizedReviewActors`,
- * both derived from the CURRENT `policy` (reloaded fresh from the base branch every run) — if
+ * both derived from the CURRENT `policy` (reloaded fresh from the default branch every run) — if
  * that policy changes between the round that set the latch and this one, a latched review's
  * author can silently stop being a summoned actor and drop out of `candidates` for a reason
  * that has nothing to do with dismissal. Checking each latched id against the raw list avoids
@@ -430,7 +430,7 @@ function truncateWarnings(warnings) {
 }
 
 // #267: advisory-only gate-time sanity checks on the policy itself, read from the same
-// base ref as the policy (git-trees API, one call — no repo checkout exists here, see
+// default branch as the policy (git-trees API, one call — no repo checkout exists here, see
 // actions/orchestrate/action.yml). Only fetches workflow file contents when there's
 // actually something to check, to keep the common case (checks named, or no CI) cheap.
 async function policySanityWarnings(gh, repo, baseRef, policy) {

@@ -157,7 +157,7 @@ export function classifyRisk(files, policy) {
 /**
  * #267: `risk.human_required_paths` globs that match zero tracked files on the base
  * ref — a stale/typo'd path reads as protection while guarding nothing (one such glob
- * once went unnoticed for weeks). Advisory only; called from orchestrate.js with the base ref's
+ * once went unnoticed for weeks). Advisory only; called from orchestrate.js with the default branch's
  * file list from the Git Trees API.
  */
 export function unmatchedGlobs(patterns, trackedPaths) {
@@ -189,7 +189,7 @@ function workflowTriggers(content) {
  * #267: `required_checks: []` beside a real CI workflow reads as "gate is on" while
  * gating nothing (9/10 audited repos left it empty next to the template's own comment
  * asking for it to be filled in). `workflowFiles` is `{content}[]` for every YAML file
- * under `.github/workflows/` on the base ref.
+ * under `.github/workflows/` on the default branch.
  */
 export function hasUngatedCi(requiredChecks, workflowFiles) {
   if (requiredChecks.length > 0) return false;

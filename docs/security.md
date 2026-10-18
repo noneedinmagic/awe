@@ -5,7 +5,7 @@
 | Threat | Mitigation |
 |---|---|
 | Untrusted fork code reaching secrets | plain `pull_request` events only (never `pull_request_target`); fork PRs are `unmanaged` by guard; fork contexts get no secrets anyway |
-| An agent changing policy/workflows and benefiting in the same PR | policy is read from the **base ref**; `.github/**` changes are human-required by hard-coded invariant (a review request and a `risk:high` label — a signal, not a block); the fix prompt forbids Claude from touching `.github/**`, workflows, or CI config. This does not stop a trusted author from rewriting the caller in its own PR — see the next row |
+| An agent changing policy/workflows and benefiting in the same PR | policy is read from the repo's **default branch**, never the PR's base or head; `.github/**` changes are human-required by hard-coded invariant (a review request and a `risk:high` label — a signal, not a block); the fix prompt forbids Claude from touching `.github/**`, workflows, or CI config. This does not stop a trusted author from rewriting the caller in its own PR — see the next row |
 | A trusted author (an agent with push access, prompt-injected or compromised) rewriting the consumer's caller workflow in its own PR to read the fixer secrets | Not mitigated by this engine today. A same-repository `pull_request` run executes the caller from the PR branch with secrets available, before any human sees the PR; the `@live` pin protects only the reusable workflow. The real boundary is the `authors` allow-list plus the human opt-in label. Trusted-ref execution and environment-scoped secrets are under design (noneedinmagic/agentic-workflows#302); until then, treat every login in `authors` as able to read the secrets the caller forwards |
 | Agents declaring themselves mergeable | agents only produce evidence (reviews, pushes); `gate.js` maps recorded state to the check deterministically; nothing an agent writes is executed as policy |
 | Spoofed reviewer | the Codex actor is matched by **exact login** from policy (`chatgpt-codex-connector[bot]`), never `user.type == Bot` |
@@ -27,13 +27,15 @@
 
 ## Label-based opt-in trust
 
-`ai:managed` can only be added by users with triage permission on the repo — for a
-personal repo that is the owner. If collaborators are added, remember that granting
-triage also grants the ability to enroll PRs into automation; fork PRs are never
-enrolled, label or not.
+The `ai:managed` label alone does not enroll a PR: it counts only when the user who
+applied it (taken from the PR's issue-events history, latest `labeled` event) is listed
+under `humans` in the policy. A label with no attributable applier, or one applied by
+anyone not listed, is ignored (fail-closed) and the orchestrator says so once per event.
+Authors on the `authors` allowlist need no label; fork PRs are never enrolled, label or
+not.
 
 ## Manual override
 
 Everything the orchestrator does is reversible by a human at any time: remove the label,
 dismiss the review request, push to the branch (resets the episode), or set
-`mode: disabled` on the base branch to stop the machine repo-wide.
+`mode: disabled` on the default branch to stop the machine repo-wide.

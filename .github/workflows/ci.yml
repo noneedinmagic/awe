@@ -53,7 +53,7 @@ jobs:
       # required-check contract below: `required_checks: ["actionlint"]` in ai-policy.yml
       # matches by exact check-run name, and check runs are named after the *job*, not the
       # step — folding this into `actionlint` instead would silently rename the check and
-      # strand every open PR's `ci` at `pending` forever (policy loads from the base
+      # strand every open PR's `ci` at `pending` forever (policy loads from the default
       # branch, so the same PR can't self-unblock).
       - name: Warn when a PR forces consumer migration
         if: github.event_name == 'pull_request'
