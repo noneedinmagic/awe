@@ -52,7 +52,7 @@ risk:
 
 # "Tests" is matched as a prefix (via /regex/, since matchPattern() otherwise requires
 # exact string equality) rather than a literal, so a node-version matrix ("Tests (node
-# 24)") matches: a PR is judged by the BASE branch's copy of this file (loadPolicy),
+# 24)") matches: a PR is judged by the DEFAULT branch's copy of this file (loadPolicy),
 # never its own.
 required_checks:
   - "/^Tests($| )/"

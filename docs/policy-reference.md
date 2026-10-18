@@ -5,7 +5,7 @@ Schema: [`schemas/ai-policy.schema.json`](../schemas/ai-policy.schema.json); tem
 `scripts/lib/policy.js` — an invalid policy fails the orchestrator run visibly rather
 than guessing.
 
-The policy is always read from the **base branch** of the PR being processed. A PR can
+The policy is always read from the **default branch** of the repo the PR targets. A PR can
 never alter the policy it is judged by; policy changes take effect only after they merge.
 
 | Key | Default | Meaning |
@@ -39,7 +39,7 @@ never alter the policy it is judged by; policy changes take effect only after th
 
 Every gate run also checks the policy itself for two common mistakes and adds an
 advisory (non-blocking) warning to the gate output when found: a `risk.human_required_paths`
-glob matching zero tracked files on the base ref, or `required_checks: []` sitting beside
+glob matching zero tracked files on the default branch, or `required_checks: []` sitting beside
 a real CI workflow that could be gating PRs (see [`scripts/lib/risk.js`](../scripts/lib/risk.js)'s
 `unmatchedGlobs`/`hasUngatedCi`).
 

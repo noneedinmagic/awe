@@ -15,7 +15,7 @@ this documentation cites by number; it pins this repo at a submodule SHA.
 On every PR event the caller invokes [`orchestrator.yml`](.github/workflows/orchestrator.yml),
 which runs a pure, tested state machine on the consumer's runner: risk is classified
 deterministically from the diff against the repo's `.github/ai-policy.yml` (read from the
-base branch), a review is requested exactly once per head SHA, blocking findings dispatch a
+default branch), a review is requested exactly once per head SHA, blocking findings dispatch a
 Claude fix round (max 2 by default), and anything ambiguous hands off to a human once — with
 a review request and a precise explanation in the sticky status comment every managed PR
 carries. The **AI Policy Gate** check reflects the machine's verdict; agents produce
