@@ -420,6 +420,36 @@ test('#73 regression: open-thread block resolved with nothing left open → re-q
   assert.deepEqual(notifyKinds(replay.effects), [], 'no second no-op-round ping');
 });
 
+test('no-op round is refunded once per episode: the cap still buys max_rounds real fixes', () => {
+  // PR gh-identity-router#39, second episode (cap 2): the first dispatched round only resolved
+  // leftover threads and pushed nothing. Without the refund that round used half the budget.
+  const fixing = (s, round) => ({
+    ...s, state: 'ai:fixing', round, roundOrigin: 'auto',
+    codex: { requested_sha: 'sha1', reviewed_sha: 'sha1', result: 'blocking', human_review_id: null, review_floor: 0, summoned_floor: 0 },
+  });
+  const openThreadBlock = { blocking: true, sha: 'sha1', id: 70, findings: [], openThreadBlock: true };
+  const noOp = (prev) => reduce({ ...base, prev, codexResult: openThreadBlock, fixResult: { outcome: 'disputed' }, openThreads: [] });
+
+  const start = { ...reduce({ ...base, prev: null }).next, rounds_total: 1 };
+  const first = noOp(fixing(start, 1)).next;
+  assert.equal(first.round, 0, 'the housekeeping round is given back');
+  assert.equal(first.rounds_total, 1, 'rounds_total keeps the dispatch');
+  assert.equal(first.noOpRefunded, true);
+
+  // A second no-op in the same episode is not free, so a no-op loop still reaches round-limit.
+  const second = noOp(fixing(first, 1));
+  assert.equal(second.next.round, 1, 'only one refund per episode');
+  assert.deepEqual(notifyKinds(second.effects), ['no-op-round']);
+  assert.equal(second.effects.find((e) => e.kind === 'no-op-round').round, 1, 'the ping names the dispatched round');
+});
+
+test('/ai retry re-arms the no-op refund for the new episode', () => {
+  const prev = { ...reduce({ ...base, prev: null }).next, state: 'ai:needs-human', round: 2, noOpRefunded: true };
+  const { next } = reduce({ ...base, prev, humanCommand: { type: 'retry', id: 1 } });
+  assert.equal(next.round, 0);
+  assert.equal(next.noOpRefunded, false);
+});
+
 // A human's /ai fix dispatches its own round independent of any standing review. If a
 // stale review still carries openThreadBlock (from an earlier, unrelated round) and its
 // threads happen to already be resolved, a no-push answer to the human's instruction must

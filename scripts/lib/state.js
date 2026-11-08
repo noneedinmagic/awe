@@ -87,6 +87,9 @@ export function newState(prNumber, headSha, mode) {
     // needs its own durable record to retry against (see the replay block below and
     // the failed-delivery rollback in orchestrate.js).
     noOp: null,
+    // The episode's one free housekeeping round has been given back (see the no-op branch of
+    // the `disputed` handling below). Reset with `round`, so each episode gets one.
+    noOpRefunded: false,
     // A BODY-ONLY summoned review's id, latched only while `ai:fixing` deliberately
     // ignores it (a round is already in flight — see the summoned-review block below). If
     // that round goes on to push, the review becomes stale for `latestSummonedReviewId`
@@ -355,6 +358,7 @@ export function reduce({
     if (!latched) s.state = 'ai:queued';
     if (pushedByHuman) {
       s.round = 0;
+      s.noOpRefunded = false;
       s.handoff = { done: false, notified: false, reason: null };
       s.ci.consecutive_failures = 0;
       // A human push starts a new episode — the once-per-episode ready ping must be
@@ -615,6 +619,7 @@ export function reduce({
     const preserveHumanReviewIdAtRetry = retriedOffDisputeThisEvent && codexResult?.source === 'human'
       && !freshHumanReviewAtRetry ? priorHumanReviewIdAtRetry : null;
     s.round = 0;
+    s.noOpRefunded = false;
     s.handoff = { done: false, notified: false, reason: null };
     // Reset the CI snapshot too, not just the counter: without this, `s.ci.sha` still
     // equals the (unchanged) head, so the failure-counting check below never re-counts
@@ -987,7 +992,16 @@ export function reduce({
           // Latched (see s.noOp above), not pushed directly: the replay block near the end
           // of this function is what actually emits the effect, so a failed/disabled send
           // can retry on a later event instead of losing the ping for good.
-          s.noOp = { round: s.round, notified: false };
+          const noOpRound = s.round;
+          // A round that changed no code is housekeeping, not litigation: give it back so the
+          // cap still buys `max_rounds` real fixes. Once per episode (`noOpRefunded`), so a
+          // fixer/reviewer pair trading no-ops still reaches `round-limit`; `rounds_total`
+          // keeps the dispatch. ponytail: one free no-op per episode, a per-PR knob if more is needed.
+          if (!s.noOpRefunded) {
+            s.round = Math.max(0, s.round - 1);
+            s.noOpRefunded = true;
+          }
+          s.noOp = { round: noOpRound, notified: false };
         } else if (threadsKnown && openThreads.length > 0) {
           // Threads remain open regardless of how the round was dispatched — a definite
           // dispute. A compliant fixer never leaves a thread open without having pushed
