@@ -140,6 +140,9 @@ ADR 0007.
 **Fix round**:
 One fixer dispatch — the unit `max_rounds` counts. Reviews are only what triggers one;
 the domain never calls these "review rounds".
+Exception: the first **no-op round** of an episode (no push, open-thread block with its
+threads resolved) is refunded — it counts in `rounds_total` but not against the episode
+budget. A second one in the same episode is not, so a no-op loop still hits `round-limit`.
 
 **Episode budget**:
 `round`'s live value against the effective cap: how many fix rounds the *current*
