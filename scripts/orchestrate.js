@@ -9,11 +9,11 @@ import {
   classifyRisk, RISK_CAUSES, unmatchedGlobs, hasUngatedCi,
 } from './lib/risk.js';
 import { latestCodexResult, inspectReview } from './lib/inspect-review.js';
-import { fetchReviewThreads, qualifyUnresolvedThreads, unansweredThreads } from './lib/review-threads.js';
+import { fetchReviewThreads, qualifyUnresolvedThreads, unansweredThreads, fixerRepliedAny } from './lib/review-threads.js';
 import { extractAdjudicationCards } from './lib/adjudication-cards.js';
 import {
   parseStateComment, parseEchoMarker, renderComment, renderEcho, renderRefreshReply, reduce, STATES,
-  DISPUTE_REASON_LABELS,
+  DISPUTE_REASON_LABELS, REASON_LABELS,
 } from './lib/state.js';
 import { evaluateGate, GATE_NAME } from './lib/gate.js';
 import { buildTelegramMessage, sendTelegram as defaultSendTelegram } from './lib/telegram.js';
@@ -363,7 +363,7 @@ export function managedLabelNames(policy, currentLabels = []) {
   const name = (key) => policy.labelNames[key] ?? key;
   const names = new Set([
     ...STATES.map(name), ...['risk:low', 'risk:medium', 'risk:high'].map(name),
-    ...[...DISPUTE_REASON_LABELS].map((r) => name(`ai:${r}`)),
+    ...[...REASON_LABELS].map((r) => name(`ai:${r}`)),
     ...RISK_CAUSES.map((c) => name(`human:${c}`)), ...Object.values(CI_LABELS).map(name),
   ]);
   for (let i = 0; i <= ROUND_LABEL_MAX; i++) names.add(name(roundLabelKey(i)));
@@ -389,7 +389,7 @@ export function desiredLabels(state, policy) {
   if (ciLabel) labels.push(name(ciLabel));
   // Reason visible in the PR list, not just the sticky comment/ping — several
   // ai:needs-human PRs are otherwise indistinguishable at a glance (see #73).
-  if (state.state === 'ai:needs-human' && DISPUTE_REASON_LABELS.has(state.handoff.reason)) {
+  if (state.state === 'ai:needs-human' && REASON_LABELS.has(state.handoff.reason)) {
     labels.push(name(`ai:${state.handoff.reason}`));
   }
   return labels;
@@ -591,7 +591,13 @@ export function threadResolutionRule(policy) {
   return THREAD_RESOLUTION_RULES[policy.threadAuthority] ?? THREAD_RESOLUTION_RULES.default;
 }
 
-export async function classifierThreads(gh, repo, prNumber, policy, { forRefresh = false } = {}) {
+export async function classifierThreads(gh, repo, prNumber, policy, opts) {
+  return (await classifierThreadsDetailed(gh, repo, prNumber, policy, opts))?.open ?? null;
+}
+
+// `fixerReplied` is computed from the FULL qualifying set, before the `adjudicate`/`reviewer`
+// narrowing below drops answered threads — the narrowed list alone can't say "replied in none".
+export async function classifierThreadsDetailed(gh, repo, prNumber, policy, { forRefresh = false } = {}) {
   try {
     const threads = await fetchReviewThreads(gh, repo, prNumber);
     // At `thread_authority: fixer` (the default) this is unchanged — every qualifying
@@ -604,9 +610,10 @@ export async function classifierThreads(gh, repo, prNumber, policy, { forRefresh
     // threads remain unresolved," so a fixer's own reply to a still-open thread must
     // still count as blocking — unlike the disputed-round classifier, refresh isn't
     // trying to tell a push-back apart from an unaddressed finding.
-    return forRefresh || policy.threadAuthority === 'fixer'
+    const open = forRefresh || policy.threadAuthority === 'fixer'
       ? qualifyUnresolvedThreads(threads, policy)
       : unansweredThreads(threads, policy);
+    return { open, fixerReplied: fixerRepliedAny(threads, policy) };
   } catch (err) {
     console.warn(`classifier threads: ${err.message}`);
     return null;
@@ -912,10 +919,13 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   // never guessing, when this comes back null). `null` (not `[]`) on failure —
   // classifierThreads deliberately doesn't reuse safeHandoffThreads' display-oriented
   // fallback, since `[]` here would misclassify an unconfirmed thread state as agreement.
-  const openThreads = (fixResultMode && fixResult.outcome === 'disputed') || humanCommand?.type === 'refresh' || approachingReady
-    ? await classifierThreads(gh, repo, prNumber, policy,
+  const classified = (fixResultMode && fixResult.outcome === 'disputed') || humanCommand?.type === 'refresh' || approachingReady
+    ? await classifierThreadsDetailed(gh, repo, prNumber, policy,
       { forRefresh: humanCommand?.type === 'refresh' || approachingReady })
     : null;
+  const openThreads = classified?.open ?? null;
+  // null (unknown) when the fetch failed or wasn't needed — reduce() never reads that as silent.
+  const fixerReplied = classified?.fixerReplied ?? null;
   // Distinguishes "this event had no reason to fetch threads" from "we specifically
   // needed to confirm no thread blocks the ai:ready promotion and couldn't" — both leave
   // `openThreads` null, but only the latter should stop reduce() from promoting on an
@@ -932,7 +942,7 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     event: fixResultMode ? `fix-result:${fixResult.outcome}` : eventLabel,
     codexResult, ci, fixResult, pushedByHuman, codexDismissed, humanCommand, openThreads, summonedReviewId,
     summonedReviewHasThread, summonedReviewUrl, summonedReviewHasBodyOnlyPending, summonedDuringFixDismissed,
-    summonedReviewIds, threadFetchFailed,
+    summonedReviewIds, threadFetchFailed, fixerReplied,
   });
 
   const active = policy.mode === 'active';
@@ -1131,7 +1141,7 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
     // others": ci:pending is near-universal (most PRs sit pending for most of their
     // life), so an unbootstrapped consumer would throw on its very next PR event.
     const labelName = (key) => policy.labelNames[key] ?? key;
-    const disputeLabelNames = new Set([...DISPUTE_REASON_LABELS].map((r) => labelName(`ai:${r}`)));
+    const disputeLabelNames = new Set([...REASON_LABELS].map((r) => labelName(`ai:${r}`)));
     const roundLabelNames = new Set(
       Array.from({ length: ROUND_LABEL_MAX + 1 }, (_, i) => labelName(roundLabelKey(i))),
     );

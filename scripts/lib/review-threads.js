@@ -57,6 +57,17 @@ export function unansweredThreads(threads, policy) {
   });
 }
 
+/**
+ * Whether the fixer has replied in ANY qualifying open thread — the fact behind the
+ * `fixer-silent` handoff (a no-push round where it posted nothing anywhere). The inverse of
+ * `unansweredThreads` taken over the full qualifying set: a thread counts as replied-to
+ * when it is NOT unanswered. False when there are no qualifying threads at all.
+ */
+export function fixerRepliedAny(threads, policy) {
+  const unanswered = new Set(unansweredThreads(threads, policy));
+  return qualifyUnresolvedThreads(threads, policy).some((t) => !unanswered.has(t));
+}
+
 // GitHub's GraphQL Actor union drops the "[bot]" suffix that bot logins carry
 // everywhere else in this codebase — REST's `user.login`, policy.yml's `authors`/
 // `reviewers.actors`/`humans`, inspect-review.js's comparisons. Confirmed live:

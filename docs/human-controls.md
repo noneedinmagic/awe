@@ -94,7 +94,7 @@ secrets to get a Telegram message on:
   comment shows, plus a `<b>Risk:</b>` block (level and reasons) whenever the PR's
   risk is elevated, regardless of which reason actually triggered the handoff. For
   the three dispute reasons (`agents-disagree`, `agents-may-disagree`,
-  `reviewer-sustained`), the message also lifts each blocking thread's
+  `reviewer-sustained`; `fixer-silent` is not one — it has no thread to adjudicate), the message also lifts each blocking thread's
   plain-language adjudication card straight in — the "🧑‍⚖️ For the human, in plain
   words:" card a `sustain` reply appends when a disagreement completes a full
   push-back/rebuttal cycle (see `scripts/lib/adjudication-cards.js`) — so triage

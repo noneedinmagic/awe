@@ -1196,3 +1196,14 @@ test('renderRefreshReply covers every outcome', () => {
   assert.doesNotMatch(renderRefreshReply({ outcome: 're-queued', wasFixing: false }), /discarded/);
   assert.match(renderRefreshReply({ outcome: 're-queued', wasFixing: true }), /ai:fixing.*discarded/s);
 });
+
+test('#528: /ai retry on a fixer-silent handoff dispatches the fixer against the standing review (same as fixer-failed)', () => {
+  const stuck = {
+    ...reduce({ ...base, prev: null }).next,
+    state: 'ai:needs-human', round: 1, handoff: { done: true, reason: 'fixer-silent' },
+  };
+  const codexResult = { blocking: true, sha: 'sha1', findings: [{ id: 1 }] };
+  const { next, effects } = reduce({ ...base, prev: stuck, codexResult, humanCommand: { type: 'retry' } });
+  assert.equal(next.state, 'ai:fixing');
+  assert.ok(types(effects).includes('dispatch-fixer'), 'not treated as a dispute: no fresh-review detour');
+});

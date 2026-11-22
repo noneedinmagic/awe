@@ -47,7 +47,9 @@ automatically a dispute: it's
 classified by whether the round was dispatched purely by an open-thread block and
 whether any such threads are still open now. Resolved-and-nothing-left-open re-queues
 quietly (a blue informational ping, not a handoff); a thread still open is a definite
-`agents-disagree`; anything the record can't confirm — real findings with nothing left
+`agents-disagree` — unless the fixer replied in none of the open threads, in which case
+it produced nothing at all and the handoff is `fixer-silent` (`ai:fixer-silent`; not a
+dispute — check the linked run, then `/ai retry`); anything the record can't confirm — real findings with nothing left
 open, or the thread fetch itself failing — is the hedged `agents-may-disagree`.
 
 **`/ai retry` on a `reviewer-sustained` handoff and nothing moves** — this is a

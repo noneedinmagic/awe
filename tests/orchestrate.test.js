@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   resolveEvent, computeCiStatus, managedLabelNames, desiredLabels, findSticky,
-  parseAiCommand, looksLikeAiCommand, safeHandoffThreads, classifierThreads, shouldEcho,
+  parseAiCommand, looksLikeAiCommand, safeHandoffThreads, classifierThreads, classifierThreadsDetailed, shouldEcho,
   threadResolutionRule, DISPUTE_REASON_LABELS, CI_LABELS, notifyCrash, main, run,
   computeAllowedBots,
 } from '../scripts/orchestrate.js';
@@ -1119,4 +1119,33 @@ test('notifyCrash: a missing Telegram secret is a silent no-op, no network attem
 
   await notifyCrash({ repo: 'o/r', prNumber: 42, prTitle: 'Fix things' }, new Error('boom'));
   assert.equal(fetched, false);
+});
+
+test('#528: fixer-silent gets its own label but is not a dispute reason', () => {
+  assert.ok(!DISPUTE_REASON_LABELS.has('fixer-silent'), 'retry/adjudication-card semantics must not widen');
+  const silent = { ...newState(1, 'sha1', 'active'), state: 'ai:needs-human', handoff: { done: true, notified: true, reason: 'fixer-silent' } };
+  assert.ok(desiredLabels(silent, policy).includes('ai:fixer-silent'));
+  assert.ok(managedLabelNames(policy).includes('ai:fixer-silent'), 'stripped on recovery');
+});
+
+test('classifierThreadsDetailed: fixerReplied is computed from the full set, even when adjudicate narrows `open`', async () => {
+  const adjudicatePolicy = parsePolicy(
+    'version: 1\nmode: active\nauthors: [a]\nhumans: [oleh]\n'
+    + 'backends: { reviewer: [local-agent], fixer: [claude-code-action] }\n'
+    + 'reviewers:\n  actors: ["your-codex-agent[bot]"]\n  vendors: { codex: ["your-codex-agent[bot]"] }\n  thread_authority: adjudicate\n',
+  );
+  const mk = (...authors) => ({ isResolved: false, path: 'a.js', comments: { nodes: authors.map((login) => ({ author: { login } })) } });
+  const run = (policyToUse, nodes) => classifierThreadsDetailed({ graphql: async () => ({
+    repository: { pullRequest: { reviewThreads: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } },
+  }) }, 'o/r', 1, policyToUse);
+  const R = 'your-codex-agent[bot]';
+  // reviewer only, never answered → silent at every tier
+  assert.equal((await run(adjudicatePolicy, [mk(R)])).fixerReplied, false);
+  assert.equal((await run(policy, [mk(R)])).fixerReplied, false);
+  // one answered thread + one untouched: `open` narrows to the untouched one, but the fixer did reply
+  const mixed = await run(adjudicatePolicy, [mk(R, 'claude[bot]'), mk(R)]);
+  assert.equal(mixed.fixerReplied, true);
+  assert.equal(mixed.open.length, 1);
+  // fetch failure → null, never a fabricated false
+  assert.equal(await classifierThreadsDetailed({ graphql: async () => { throw new Error('boom'); } }, 'o/r', 1, policy), null);
 });
