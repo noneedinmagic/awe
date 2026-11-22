@@ -1134,10 +1134,15 @@ test('classifierThreadsDetailed: fixerReplied is computed from the full set, eve
     + 'backends: { reviewer: [local-agent], fixer: [claude-code-action] }\n'
     + 'reviewers:\n  actors: ["your-codex-agent[bot]"]\n  vendors: { codex: ["your-codex-agent[bot]"] }\n  thread_authority: adjudicate\n',
   );
-  const mk = (...authors) => ({ isResolved: false, path: 'a.js', comments: { nodes: authors.map((login) => ({ author: { login } })) } });
-  const run = (policyToUse, nodes) => classifierThreadsDetailed({ graphql: async () => ({
+  // each author is `login` (this run) or `login@old` (an earlier round)
+  const SINCE = '2026-01-02T00:00:00Z';
+  const mk = (...authors) => ({ isResolved: false, path: 'a.js', comments: { nodes: authors.map((a) => {
+    const [login, old] = a.split('@');
+    return { author: { login }, createdAt: old ? '2026-01-01T00:00:00Z' : '2026-01-02T00:05:00Z' };
+  }) } });
+  const run = (policyToUse, nodes, fixRunStartedAt = SINCE) => classifierThreadsDetailed({ graphql: async () => ({
     repository: { pullRequest: { reviewThreads: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } },
-  }) }, 'o/r', 1, policyToUse);
+  }) }, 'o/r', 1, policyToUse, { fixRunStartedAt });
   const R = 'your-codex-agent[bot]';
   // reviewer only, never answered → silent at every tier
   assert.equal((await run(adjudicatePolicy, [mk(R)])).fixerReplied, false);
@@ -1148,6 +1153,11 @@ test('classifierThreadsDetailed: fixerReplied is computed from the full set, eve
   assert.equal(mixed.open.length, 1);
   // an unlisted collaborator / other app replying is NOT the fixer replying
   assert.equal((await run(adjudicatePolicy, [mk(R, 'stranger')])).fixerReplied, false);
+  // a fixer reply from an EARLIER round (before this run started) must not mask a silent run
+  assert.equal((await run(policy, [mk(R, 'claude[bot]@old')])).fixerReplied, false);
+  assert.equal((await run(policy, [mk(R, 'claude[bot]@old'), mk(R, 'claude[bot]')])).fixerReplied, true);
+  // no run-start boundary (unreadable) → unknown, never a fabricated false
+  assert.equal((await run(policy, [mk(R)], null)).fixerReplied, null);
   // fetch failure → null, never a fabricated false
   assert.equal(await classifierThreadsDetailed({ graphql: async () => { throw new Error('boom'); } }, 'o/r', 1, policy), null);
 });

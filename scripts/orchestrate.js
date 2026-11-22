@@ -597,7 +597,8 @@ export async function classifierThreads(gh, repo, prNumber, policy, opts) {
 
 // `fixerReplied` is computed from the FULL qualifying set, before the `adjudicate`/`reviewer`
 // narrowing below drops answered threads — the narrowed list alone can't say "replied in none".
-export async function classifierThreadsDetailed(gh, repo, prNumber, policy, { forRefresh = false } = {}) {
+// `fixRunStartedAt` bounds it to the current fixer run (see fixerRepliedAny); absent → null.
+export async function classifierThreadsDetailed(gh, repo, prNumber, policy, { forRefresh = false, fixRunStartedAt = null } = {}) {
   try {
     const threads = await fetchReviewThreads(gh, repo, prNumber);
     // At `thread_authority: fixer` (the default) this is unchanged — every qualifying
@@ -613,7 +614,7 @@ export async function classifierThreadsDetailed(gh, repo, prNumber, policy, { fo
     const open = forRefresh || policy.threadAuthority === 'fixer'
       ? qualifyUnresolvedThreads(threads, policy)
       : unansweredThreads(threads, policy);
-    return { open, fixerReplied: fixerRepliedAny(threads, policy) };
+    return { open, fixerReplied: fixerRepliedAny(threads, policy, fixRunStartedAt) };
   } catch (err) {
     console.warn(`classifier threads: ${err.message}`);
     return null;
@@ -919,9 +920,19 @@ export async function main({ env = process.env, gh: injectedGh, sendTelegram = d
   // never guessing, when this comes back null). `null` (not `[]`) on failure —
   // classifierThreads deliberately doesn't reuse safeHandoffThreads' display-oriented
   // fallback, since `[]` here would misclassify an unconfirmed thread state as agreement.
+  // The fix job's own run start bounds "did the fixer reply THIS run" (an earlier round's
+  // reply in a still-open thread must not count). Unreadable → null → never read as silent.
+  let fixRunStartedAt = null;
+  if (fixResultMode && fixResult.outcome === 'disputed') {
+    try {
+      fixRunStartedAt = (await gh.request('GET', `/repos/${repo}/actions/runs/${env.GITHUB_RUN_ID}`)).run_started_at ?? null;
+    } catch (err) {
+      console.warn(`fix run start: ${err.message}`);
+    }
+  }
   const classified = (fixResultMode && fixResult.outcome === 'disputed') || humanCommand?.type === 'refresh' || approachingReady
     ? await classifierThreadsDetailed(gh, repo, prNumber, policy,
-      { forRefresh: humanCommand?.type === 'refresh' || approachingReady })
+      { forRefresh: humanCommand?.type === 'refresh' || approachingReady, fixRunStartedAt })
     : null;
   const openThreads = classified?.open ?? null;
   // null (unknown) when the fetch failed or wasn't needed — reduce() never reads that as silent.
