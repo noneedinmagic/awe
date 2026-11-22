@@ -1146,6 +1146,8 @@ test('classifierThreadsDetailed: fixerReplied is computed from the full set, eve
   const mixed = await run(adjudicatePolicy, [mk(R, 'claude[bot]'), mk(R)]);
   assert.equal(mixed.fixerReplied, true);
   assert.equal(mixed.open.length, 1);
+  // an unlisted collaborator / other app replying is NOT the fixer replying
+  assert.equal((await run(adjudicatePolicy, [mk(R, 'stranger')])).fixerReplied, false);
   // fetch failure → null, never a fabricated false
   assert.equal(await classifierThreadsDetailed({ graphql: async () => { throw new Error('boom'); } }, 'o/r', 1, policy), null);
 });

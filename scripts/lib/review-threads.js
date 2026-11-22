@@ -65,7 +65,11 @@ export function unansweredThreads(threads, policy) {
  */
 export function fixerRepliedAny(threads, policy) {
   const unanswered = new Set(unansweredThreads(threads, policy));
-  return qualifyUnresolvedThreads(threads, policy).some((t) => !unanswered.has(t));
+  // Only the fixer's own identity counts as a fixer reply: an unlisted collaborator or
+  // another app replying last must not read as "the fixer answered".
+  const fixers = new Set(policy.reviewerVendors?.claude ?? []);
+  return qualifyUnresolvedThreads(threads, policy).some((t) => !unanswered.has(t)
+    && (t.comments ?? []).slice(1).some((c) => fixers.has(c.author)));
 }
 
 // GitHub's GraphQL Actor union drops the "[bot]" suffix that bot logins carry
