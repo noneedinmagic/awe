@@ -1163,6 +1163,13 @@ test('classifierThreadsDetailed: fixerReplied is computed from the full set, eve
     + 'reviewers:\n  actors: ["your-codex-agent[bot]"]\n  vendors: { claude: [], codex: ["your-codex-agent[bot]"] }\n',
   );
   assert.equal((await run(noClaudeVendor, [mk(R, 'claude[bot]')])).fixerReplied, true);
+  // another configured Claude reviewer replying is NOT the fixer (vendors.claude is a reviewer list)
+  const twoClaude = parsePolicy(
+    'version: 1\nmode: active\nauthors: [a]\nhumans: [oleh]\n'
+    + 'backends: { reviewer: [local-agent], fixer: [claude-code-action] }\n'
+    + 'reviewers:\n  actors: ["your-codex-agent[bot]", "other-claude[bot]"]\n  vendors: { claude: ["claude[bot]", "other-claude[bot]"], codex: ["your-codex-agent[bot]"] }\n',
+  );
+  assert.equal((await run(twoClaude, [mk(R, 'other-claude[bot]')])).fixerReplied, false);
   // no run-start boundary (unreadable) → unknown, never a fabricated false
   assert.equal((await run(policy, [mk(R)], null)).fixerReplied, null);
   // fetch failure → null, never a fabricated false
