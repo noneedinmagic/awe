@@ -5,6 +5,7 @@
   { "name": "ai:needs-human", "color": "d93f0b", "description": "Automation stopped — human decision required" },
   { "name": "ai:agents-disagree", "color": "d93f0b", "description": "Definite dispute — fixer changed no code and left a thread open" },
   { "name": "ai:agents-may-disagree", "color": "fbca04", "description": "Possible dispute — fixer changed no code and left no open threads; can't confirm which" },
+  { "name": "ai:fixer-silent", "color": "d93f0b", "description": "Fixer ran and posted nothing — not a dispute" },
   { "name": "ai:reviewer-sustained", "color": "d93f0b", "description": "Reviewer re-adjudicated a push-back against current code and sustained its finding" },
   { "name": "ai:ready", "color": "0e8a16", "description": "Clean review, green CI — the AI axis is clear (see risk:*/human:* for human review need)" },
   { "name": "ai:failed", "color": "b60205", "description": "Orchestrator internal failure" },

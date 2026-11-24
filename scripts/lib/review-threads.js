@@ -57,6 +57,32 @@ export function unansweredThreads(threads, policy) {
   });
 }
 
+/**
+ * Whether the fixer posted a reply in ANY qualifying open thread DURING THE CURRENT RUN —
+ * the fact behind the `fixer-silent` handoff (a no-push round where it posted nothing
+ * anywhere). `since` is the current fix run's start time: a reply from an earlier round
+ * (still sitting in a thread a retry left open) must not mask a silent later run, and
+ * `fetchReviewThreads` carries each comment's `createdAt` for exactly this. Returns null
+ * ("unknown", never a guess) when `since` is missing/unparseable or a fixer comment has no
+ * parseable timestamp; false when there are no qualifying threads at all.
+ */
+export function fixerRepliedAny(threads, policy, since) {
+  const boundary = Date.parse(since);
+  if (Number.isNaN(boundary)) return null;
+  // Only the fixer's own identity counts as a fixer reply: an unlisted collaborator or
+  // another app replying must not read as "the fixer answered". The thread's root is
+  // skipped: `claude[bot]` can also originate a thread (a summoned `@claude review`).
+  // The fixer is claude-code-action, which always replies as `claude[bot]`. Not
+  // `vendors.claude`: that is a reviewer-family list (may be empty, or name other Claude
+  // reviewers whose replies are not the fixer's).
+  const fixers = new Set(['claude[bot]']);
+  const mine = qualifyUnresolvedThreads(threads, policy)
+    .flatMap((t) => (t.comments ?? []).slice(1).filter((c) => fixers.has(c.author)));
+  const times = mine.map((c) => Date.parse(c.createdAt));
+  if (times.some(Number.isNaN)) return null;
+  return times.some((t) => t >= boundary);
+}
+
 // GitHub's GraphQL Actor union drops the "[bot]" suffix that bot logins carry
 // everywhere else in this codebase — REST's `user.login`, policy.yml's `authors`/
 // `reviewers.actors`/`humans`, inspect-review.js's comparisons. Confirmed live:
@@ -91,7 +117,7 @@ export async function fetchReviewThreads(gh, repo, prNumber) {
               nodes {
                 id isResolved path line
                 resolvedBy { login __typename }
-                comments(first: 100) { nodes { databaseId author { login __typename } body } }
+                comments(first: 100) { nodes { databaseId author { login __typename } body createdAt } }
               }
             }
           }
@@ -119,7 +145,7 @@ export async function fetchReviewThreads(gh, repo, prNumber) {
     // posting to a reply's id is rejected. GraphQL returns comments oldest-first, so the
     // root is always index 0.
     rootCommentId: t.comments.nodes[0]?.databaseId ?? null,
-    comments: (t.comments.nodes ?? []).map((c) => ({ author: normalizeActorLogin(c.author), body: c.body })),
+    comments: (t.comments.nodes ?? []).map((c) => ({ author: normalizeActorLogin(c.author), body: c.body, createdAt: c.createdAt })),
   }));
 }
 

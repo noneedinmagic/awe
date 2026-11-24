@@ -25,6 +25,12 @@ export const STATES = ['ai:queued', 'ai:reviewing', 'ai:fixing', 'ai:needs-human
 // handoffs retry re-scans on rather than immediately re-dispatching.
 export const DISPUTE_REASON_LABELS = new Set(['agents-disagree', 'agents-may-disagree', 'reviewer-sustained']);
 
+// Every handoff reason that gets its own `ai:<reason>` PR label. A superset of
+// DISPUTE_REASON_LABELS on purpose: `fixer-silent` is visible in the PR list but is NOT a
+// dispute (no adjudication cards, and `/ai retry` re-dispatches the fixer like
+// `fixer-failed` instead of re-scanning) — so it must not widen DISPUTE_REASON_LABELS.
+export const REASON_LABELS = new Set([...DISPUTE_REASON_LABELS, 'fixer-silent']);
+
 export function newState(prNumber, headSha, mode) {
   return {
     v: STATE_VERSION,
@@ -198,6 +204,10 @@ function toHandoff(state, reason, effects, event, active, runUrl = null) {
  *   own workflow-validation guard refused to run at all (the PR edits the workflow file
  *   the run came from) — distinct from `failed` (it ran and errored) and from `disputed`
  *   (it ran, reported success, pushed nothing) — see docs/troubleshooting.md.
+ * @param {boolean|null} [input.fixerReplied] whether the fixer replied in any qualifying
+ *   thread this round (a GitHub fact, never the fixer's own claim) — meaningful alongside a
+ *   `disputed` fixResult with open threads: `false` means the fixer produced nothing and the
+ *   handoff is `fixer-silent`, not a dispute. `null`/absent = unknown, never read as silent.
  * @param {boolean} input.pushedByHuman head moved by a listed human (resets the episode)
  * @param {boolean} input.codexDismissed the codex review this state relied on was dismissed
  * @param {{type: 'retry'|'fix'|'refresh'|'round-cap', instruction?: string, cap?: number, id?: number|string}|null} input.humanCommand
@@ -269,6 +279,7 @@ export function reduce({
   codexDismissed = false, humanCommand = null, openThreads = null, summonedReviewId = null,
   summonedReviewHasThread = false, summonedReviewUrl = null, summonedReviewHasBodyOnlyPending = false,
   summonedDuringFixDismissed = false, summonedReviewIds = [], threadFetchFailed = false,
+  fixerReplied = null,
 }) {
   const effects = [];
   let s = prev ? structuredClone(prev) : newState(pr.number, pr.headSha, policy.mode);
@@ -1007,8 +1018,12 @@ export function reduce({
           // dispute. A compliant fixer never leaves a thread open without having pushed
           // back on it (claude-fix-prompt.md: "never resolve a thread you pushed back on"),
           // so an open thread here is either an unaddressed finding or an unresolved
-          // pushback; either way a human arbitrates.
-          toHandoff(s, 'agents-disagree', effects, event, active);
+          // pushback; either way a human arbitrates — unless the fixer replied nowhere at
+          // all (`fixerReplied === false`, a fact read from the threads, not a self-report):
+          // claude-fix-prompt.md requires a reply to every thread, so no reply anywhere
+          // means it stalled, not that it disagreed. Same recovery as `fixer-failed`.
+          if (fixerReplied === false) toHandoff(s, 'fixer-silent', effects, event, active, fixResult.runUrl);
+          else toHandoff(s, 'agents-disagree', effects, event, active);
         } else {
           // Thread state unknown (fetch failed — fail toward the loud reading, never
           // silence) or the round carried real/body-only findings with nothing left open:

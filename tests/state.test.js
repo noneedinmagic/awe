@@ -1914,3 +1914,41 @@ test('describeHandoff: fixer-failed shows the run link only when present', () =>
   const withoutUrl = describeHandoff({ round: 1, ci: { conclusion: null }, handoff: { reason: 'fixer-failed' } }, []);
   assert.doesNotMatch(withoutUrl, /Failed run/);
 });
+
+// #528: a no-push round where the fixer posted nothing anywhere is not a dispute.
+test('fixer dispute without push, open thread, fixer replied nowhere → fixer-silent (not agents-disagree)', () => {
+  const prev = { ...reduce({ ...base, prev: null }).next, state: 'ai:fixing', round: 1 };
+  const openThreads = [{ path: 'a.js', comments: [{ author: 'normandy-garrus[bot]', body: 'still not fixed' }] }];
+  const { next, effects } = reduce({
+    ...base, prev, fixResult: { outcome: 'disputed', runUrl: 'https://x/run' }, openThreads, fixerReplied: false,
+  });
+  assert.equal(next.state, 'ai:needs-human');
+  assert.equal(next.handoff.reason, 'fixer-silent');
+  assert.equal(next.handoff.runUrl, 'https://x/run');
+  assert.equal(effects.find((e) => e.type === 'notify').reason, 'fixer-silent');
+});
+
+test('fixer dispute without push, open thread, fixer replied (or unknown) → still agents-disagree', () => {
+  const prev = { ...reduce({ ...base, prev: null }).next, state: 'ai:fixing', round: 1 };
+  const openThreads = [{ path: 'a.js', comments: [{ author: 'normandy-garrus[bot]', body: 'x' }] }];
+  for (const fixerReplied of [true, null, undefined]) {
+    const { next } = reduce({ ...base, prev, fixResult: { outcome: 'disputed' }, openThreads, fixerReplied });
+    assert.equal(next.handoff.reason, 'agents-disagree', `fixerReplied=${fixerReplied}: only a confirmed false is silent`);
+  }
+});
+
+test('fixer-silent never fires without open threads (may-disagree / quiet re-queue stay as they were)', () => {
+  const prev = { ...reduce({ ...base, prev: null }).next, state: 'ai:fixing', round: 1 };
+  const codexResult = { blocking: true, sha: 'sha1', findings: [{ id: 1 }] };
+  const none = reduce({ ...base, prev, codexResult, fixResult: { outcome: 'disputed' }, openThreads: [], fixerReplied: false });
+  assert.equal(none.next.handoff.reason, 'agents-may-disagree');
+  const unknown = reduce({ ...base, prev, codexResult, fixResult: { outcome: 'disputed' }, openThreads: null, fixerReplied: false });
+  assert.equal(unknown.next.handoff.reason, 'agents-may-disagree');
+});
+
+test('describeHandoff: fixer-silent says nothing was posted and labels the run link', () => {
+  const s = { ...reduce({ ...base, prev: null }).next, state: 'ai:needs-human', handoff: { done: true, reason: 'fixer-silent', runUrl: 'https://x/run' } };
+  const body = describeHandoff(s, []);
+  assert.match(body, /posted no reply/);
+  assert.match(body, /\*\*Silent run:\*\* https:\/\/x\/run/);
+});

@@ -468,7 +468,8 @@ export function buildTelegramMessage({
   if (runUrl) {
     // Same field, three meanings — see describeHandoff's identical branch in handoff.js.
     const label = reason === 'fixer-failed' ? 'Failed run'
-      : reason === 'fixer-skipped' ? 'Skipped run' : 'Standing review';
+      : reason === 'fixer-skipped' ? 'Skipped run'
+      : reason === 'fixer-silent' ? 'Silent run' : 'Standing review';
     lines.push(`<b>${label}:</b> <a href="${esc(runUrl)}">${esc(runUrl)}</a>`);
   }
   // #165: lifts each deadlocked thread's plain-language adjudication card (the last one

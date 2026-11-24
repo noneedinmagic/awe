@@ -15,6 +15,10 @@ export const REASONS = {
     why: 'The reviewer re-adjudicated the fixer\'s push-back against current code and sustained its finding (ADR-0005).',
     scope: 'You are overruling a judgement the reviewer already re-verified, not just re-litigating an old one — read the thread and rule, or `/ai fix` to hand it back with new instructions.',
   },
+  'fixer-silent': {
+    why: 'The fixer ran, changed no code and posted no reply on any open thread — it produced nothing, which is not a dispute.',
+    scope: 'Check the run below for why it stopped, then comment `/ai retry` to run the fixer again, or fix manually.',
+  },
   'fixer-failed': {
     why: 'The Claude fix job failed or timed out.',
     scope: 'Check the failed workflow run below, then re-trigger by pushing or re-running the job.',
@@ -98,7 +102,8 @@ export function describeHandoff(state, threads = []) {
     // list below is empty by construction — see REASONS above — so this is the only
     // thing to click).
     const label = state.handoff.reason === 'fixer-failed' ? 'Failed run'
-      : state.handoff.reason === 'fixer-skipped' ? 'Skipped run' : 'Standing review';
+      : state.handoff.reason === 'fixer-skipped' ? 'Skipped run'
+      : state.handoff.reason === 'fixer-silent' ? 'Silent run' : 'Standing review';
     lines.push(`**${label}:** ${state.handoff.runUrl}`);
   }
   if (threads.length) {
