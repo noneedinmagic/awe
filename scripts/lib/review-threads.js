@@ -72,7 +72,10 @@ export function fixerRepliedAny(threads, policy, since) {
   // Only the fixer's own identity counts as a fixer reply: an unlisted collaborator or
   // another app replying must not read as "the fixer answered". The thread's root is
   // skipped: `claude[bot]` can also originate a thread (a summoned `@claude review`).
-  const fixers = new Set(policy.reviewerVendors?.claude ?? []);
+  // `vendors.claude` is a reviewer-family list and may omit `claude[bot]` (an empty list is a
+  // valid policy), yet claude-code-action always replies as `claude[bot]` — so that login is
+  // always a fixer identity, whatever the policy lists.
+  const fixers = new Set(['claude[bot]', ...(policy.reviewerVendors?.claude ?? [])]);
   const mine = qualifyUnresolvedThreads(threads, policy)
     .flatMap((t) => (t.comments ?? []).slice(1).filter((c) => fixers.has(c.author)));
   const times = mine.map((c) => Date.parse(c.createdAt));

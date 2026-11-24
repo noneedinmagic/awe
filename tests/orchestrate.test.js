@@ -1156,6 +1156,13 @@ test('classifierThreadsDetailed: fixerReplied is computed from the full set, eve
   // a fixer reply from an EARLIER round (before this run started) must not mask a silent run
   assert.equal((await run(policy, [mk(R, 'claude[bot]@old')])).fixerReplied, false);
   assert.equal((await run(policy, [mk(R, 'claude[bot]@old'), mk(R, 'claude[bot]')])).fixerReplied, true);
+  // a policy whose vendors.claude omits claude[bot] still treats claude[bot] as the fixer
+  const noClaudeVendor = parsePolicy(
+    'version: 1\nmode: active\nauthors: [a]\nhumans: [oleh]\n'
+    + 'backends: { reviewer: [local-agent], fixer: [claude-code-action] }\n'
+    + 'reviewers:\n  actors: ["your-codex-agent[bot]"]\n  vendors: { claude: [], codex: ["your-codex-agent[bot]"] }\n',
+  );
+  assert.equal((await run(noClaudeVendor, [mk(R, 'claude[bot]')])).fixerReplied, true);
   // no run-start boundary (unreadable) → unknown, never a fabricated false
   assert.equal((await run(policy, [mk(R)], null)).fixerReplied, null);
   // fetch failure → null, never a fabricated false
